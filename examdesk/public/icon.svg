@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="8 8 228 228" role="img" aria-label="ExamDesk">
+  <rect x="8" y="8" width="228" height="228" rx="54" fill="#16324F"/>
+  <rect x="49" y="51" width="146" height="110" rx="18" fill="none" stroke="#FFFFFF" stroke-width="10"/>
+  <path d="M122 162v25M92 190h60" fill="none" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="173" cy="166" r="35" fill="#42C59A" stroke="#16324F" stroke-width="8"/>
+  <path d="m157 166 11 11 21-24" fill="none" stroke="#16324F" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M83 101h33M83 126h23" fill="none" stroke="#75A7E8" stroke-width="9" stroke-linecap="round"/>
+  <circle cx="145" cy="101" r="7" fill="#75A7E8"/>
+</svg>
