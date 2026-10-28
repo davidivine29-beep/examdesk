@@ -13,7 +13,9 @@ const store = {
     return out.sort();
   },
 };
-const handle = makeHandler(store);
+// XD_VENDOR_KEY is an environment variable set in Netlify (never in the code). Only its holder can set the licence.
+const vendorKey = (globalThis.Netlify && Netlify.env.get('XD_VENDOR_KEY')) || process.env.XD_VENDOR_KEY || '';
+const handle = makeHandler(store, { vendorKey });
 
 export default async (req) => handle(req);
-export const config = { path: ['/api/setup', '/api/login', '/api/passcode', '/api/result', '/api/results'] };
+export const config = { path: ['/api/setup', '/api/login', '/api/passcode', '/api/result', '/api/results', '/api/licence'] };

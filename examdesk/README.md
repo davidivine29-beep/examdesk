@@ -70,6 +70,22 @@ Pushing a change to the repository redeploys every linked site, so test before y
 Phones and computers can install the page to the home screen or desktop, with the ExamDesk icon.
 After an update to the icons, remove the old installed copy and install it again.
 
+## Cloudflare Pages without Git (drag and drop)
+Run `npm run build:cloudflare`. It makes a folder `cloudflare-upload` holding the finished site and one bundled `_worker.js`.
+In the Cloudflare dashboard create a Pages project with **Upload assets**, drag that folder in and deploy, then create a D1 database
+and bind it to the project as `DB` (Settings, then Bindings), and redeploy once. Cloudflare's drag-and-drop deploys accept a `_worker.js`
+but do not compile a `functions` folder, which is why this bundled file exists. The same folder is shipped ready-made as `examdesk-cloudflare-upload.zip`.
+
+## Hosting on Cloudflare Pages from Git
+The server part also runs on Cloudflare Pages with a D1 database (free tier). Labels in Cloudflare's dashboard change now and then.
+1. In the Cloudflare dashboard open **Workers & Pages**, create a **Pages** project and connect it to your GitHub repository.
+2. Build settings: framework **None**, build command left empty, build output directory **public**. Save and deploy.
+3. Create a D1 database (**Storage & databases**, then **D1**), for example named `examdesk`.
+4. In your Pages project open **Settings**, then **Bindings**, add a **D1 database** binding with the variable name **DB**, pick your database, and save.
+5. Redeploy (Deployments, then retry the latest deployment) so the binding takes effect.
+6. Open the site, create the examiner passcode, add your classes and press **Save to server**.
+The server code is `functions/api/[[route]].js`, using the adapter in `lib/d1-store.mjs`. The Netlify version is `netlify/functions/api.mjs`. Both share `lib/handler.mjs`.
+
 ## Not on Netlify?
 All server logic is in `lib/handler.mjs` and works with any storage that has `get(key)` and `set(key, value)`.
 `netlify/functions/api.mjs` shows the wiring. Adding another host means writing one small file like it.
@@ -85,3 +101,13 @@ The app is one file, `src/examdesk.html`. `build.mjs` puts the two libraries (JS
 
 ## Licence
 Add a LICENSE file before publishing. (MIT lets anyone reuse it freely. AGPL requires modified versions to stay open.)
+
+
+## Licensing a school (vendor)
+
+1. Create the school's site from this repo (Base directory as needed). In the site's environment variables set `TIER` (core, growth, campus or max) and `XD_VENDOR_KEY` (a long random secret only you know, 16+ characters), then redeploy.
+2. Set the licence: `node tools/set-licence.mjs https://SITE.netlify.app YOUR-KEY core 2027-01-31 "School name"`.
+3. Renew or upgrade the same way. It takes effect immediately, no redeploy (a higher tier's features also need the site's `TIER` raised and a redeploy).
+4. Check a school: `node tools/set-licence.mjs https://SITE.netlify.app`.
+
+Rules: over the student cap or past the paid-until date plus 14 grace days, the school cannot save setup changes. Sittings and result submissions are never blocked. Without a licence record the site runs unlimited (for your own testing).

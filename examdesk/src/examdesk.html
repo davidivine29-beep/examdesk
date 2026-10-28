@@ -689,7 +689,11 @@ async function hash2(s){
 }
 
 /* ---------- shared setup on the host (optional backend) ---------- */
-const SRVS={on:false,hasAdmin:false,checked:false};
+const TIER='__TIER__',TIER_RANK={core:0,growth:1,campus:2,max:3};
+const hasTier=t=>(TIER_RANK[TIER]!==undefined?TIER_RANK[TIER]:3)>=TIER_RANK[t];
+const PLAN_NAME={core:'Core',growth:'Growth',campus:'Campus',max:'Campus Max'};
+const SRVS={on:false,hasAdmin:false,checked:false,lic:null};
+const switchedOff=()=>SA&&SRVS.on&&!!SRVS.lic&&SRVS.lic.status==='deactivated';
 async function srvFetch(path,opt){
   const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),7000);
   try{return await fetch(path,Object.assign({cache:'no-store',signal:ctl.signal},opt||{}));}finally{clearTimeout(t);}
@@ -707,7 +711,7 @@ async function syncServer(){
     const r=await srvFetch('/api/setup');
     const j=r.ok&&/json/.test(r.headers.get('content-type')||'')?await r.json():null;
     if(!j||j.kind!=='xd-srv'){SRVS.on=false;return;}
-    const was=SRVS.on;SRVS.on=true;SRVS.hasAdmin=!!j.hasAdmin;SRVS.checked=true;store.set(K_HASSRV,1);
+    const was=SRVS.on;SRVS.on=true;SRVS.hasAdmin=!!j.hasAdmin;const oldSt=SRVS.lic&&SRVS.lic.status;SRVS.lic=j.licence||null;SRVS.checked=true;if(oldSt!==(SRVS.lic&&SRVS.lic.status)&&!S.ses&&(S.view==='home'||S.view==='staff'))setTimeout(render,0);store.set(K_HASSRV,1);
     const sv=j.setup;
     if(sv&&Array.isArray(sv.classes)&&(sv.stamp||0)!==(SETUP0.stamp||0)){
       if(!S.ses&&!dirty)adoptServer(sv);
@@ -734,14 +738,18 @@ async function srvSave(){
     if(r.status===409)st.err='Someone saved a newer setup first. Reload this page to get it, then repeat your change.';
     else if(r.status===429)st.err='Too many wrong attempts. Wait a few minutes, then try again.';
     else if(r.status===401){st.err='That passcode is not the one this site was set up with.';ses.del(K_H2);}
+    else if(r.status===402&&j.error==='over_cap')st.err='This plan allows '+j.cap+' children and the setup has '+j.count+'. Remove '+(j.count-j.cap)+' to save, or ask your ExamDesk provider about upgrading.';
+    else if(r.status===402&&j.error==='licence_suspended')st.err='This school’s ExamDesk is suspended, so changes cannot be saved. Sittings and results still work. Contact your ExamDesk provider.';
+    else if(r.status===402&&j.error==='licence_off')st.err='This school’s ExamDesk is switched off. Contact your ExamDesk provider.';
+    else if(r.status===402&&j.error==='licence_expired')st.err='This licence has expired, so changes cannot be saved. Sittings and results still work. Contact your ExamDesk provider to renew.';
     else if(!r.ok||!j.ok)st.err='Saving did not go through ('+r.status+'). Try again.';
     else{
       ses.set(K_H2,h2);ses.set(K_AUTH,h2);st.savePass='';
       W.adminHash='srv';W.stamp=j.stamp;
       SETUP0=clone(W);EMBED_STR=JSON.stringify(SETUP0);dirty=false;
       store.set(K_SRV,SETUP0);store.set(K_DRAFT,{base:SETUP0.stamp,setup:W});
-      SRVS.hasAdmin=true;
-      st.note='Saved '+fmtDate(j.stamp)+'. Every device gets it the next time it opens the page.';
+      SRVS.hasAdmin=true;if(j.licence)SRVS.lic=j.licence;
+      st.note='Saved '+fmtDate(j.stamp)+'. Every device gets it the next time it opens the page.'+(j.warn==='over_cap'?' Note: this is more children than your plan allows.':'');
     }
   }catch(e){st.err='Could not reach the server. Check the internet connection and try again.';}
   st.busy=false;render();
@@ -828,6 +836,7 @@ function curQ(){const s=S.ses;const e=s.qs[s.idx];return {e,q:s.exam.questions[e
 function isMulti(q){return q.options.filter(o=>o.c).length>1;}
 function persist(){store.set(K_SES,S.ses);}
 function startExam(){
+  if(switchedOff()){toast('This school’s ExamDesk is switched off. Please tell your teacher.');return;}
   const c=cls(S.cand.cid);
   const ex=c.exams.find(e=>e.id===S.form.eid);
   const exam=clone(ex);
@@ -905,7 +914,9 @@ function viewHome(){
   const exs=c?openExams(c):[];
   if(!exs.some(e=>e.id===f.eid))f.eid='';
   let form;
-  if(!cl.length){
+  if(switchedOff()){
+    form=emptyBox('This school’s ExamDesk is switched off','Please tell your teacher.');
+  }else if(!cl.length){
     form=emptyBox('No test is open yet','Your teacher will open a paper when it is time.');
   }else{
     const selClass='<label class="f">Class<select id="f-class" data-bind="form.cid"><option value="">Choose your class</option>'+cl.map(x=>'<option value="'+esc(x.id)+'"'+(x.id===f.cid?' selected':'')+'>'+esc(x.name)+'</option>').join('')+'</select></label>';
@@ -1231,6 +1242,15 @@ function pageChild(){
 }
 
 /* --- publish and backup --- */
+function licCard(){
+  const L=SRVS.lic;if(!(SA&&SRVS.on&&L&&L.set))return '';
+  const fd=t=>{try{return new Date(t).toLocaleDateString([],{dateStyle:'medium'});}catch(e){return String(t);}};
+  const nCh=W.classes.reduce((a,c)=>a+c.roster.length,0),days=Math.ceil((L.paidUntil-Date.now())/864e5);
+  const badge=L.status==='active'?'<span class="badge ok">Active</span>':L.status==='grace'?'<span class="badge warn">Payment overdue</span>':L.status==='suspended'?'<span class="badge warn">Suspended</span>':L.status==='deactivated'?'<span class="badge bad">Switched off</span>':'<span class="badge bad">Expired</span>';
+  const msg=L.status==='suspended'?'This school is suspended. Sittings and results still work, and you can read and export results, but changes cannot be saved. Contact your ExamDesk provider.':L.status==='deactivated'?'This school’s ExamDesk is switched off. Children cannot start new tests. Your stored results are kept and can still be exported. Contact your ExamDesk provider.':L.status==='grace'?'Payment is overdue. Saving still works until '+fd(L.graceUntil)+'. After that you can still run sittings and read results, but cannot save changes until the licence is renewed.':L.status==='expired'?'This licence has expired. Sittings and results still work, but changes cannot be saved until it is renewed.':(days<=14?'Renews in '+days+' day'+(days===1?'':'s')+'.':'');
+  const over=nCh>L.cap?'<div class="note">This school has more children than the plan allows ('+nCh+' of '+L.cap+'). '+(L.enforce==='block'?'You can remove children, but cannot add more until the plan is upgraded.':'Contact your ExamDesk provider about upgrading.')+'</div>':'';
+  return '<section class="card stack"><div class="row" style="justify-content:space-between"><h2>Licence</h2>'+badge+'</div><div class="sumrow"><div class="fact"><b>'+esc(PLAN_NAME[L.plan]||L.plan)+'</b><span>plan</span></div><div class="fact"><b>'+nCh+' / '+L.cap+'</b><span>children</span></div><div class="fact"><b>'+fd(L.paidUntil)+'</b><span>paid until</span></div></div>'+over+(msg?'<p class="sm">'+esc(msg)+'</p>':'')+'</section>';
+}
 function pageSetup(){
   const st=S.st;
   const nCh=W.classes.reduce((a,c)=>a+c.roster.length,0),nEx=W.classes.reduce((a,c)=>a+c.exams.length,0),nOpen=W.classes.reduce((a,c)=>a+c.exams.filter(e=>e.open).length,0);
@@ -1248,6 +1268,7 @@ function pageSetup(){
   '<div class="sumrow"><div class="fact"><b>'+W.classes.length+'</b><span>classes</span></div><div class="fact"><b>'+nCh+'</b><span>children</span></div><div class="fact"><b>'+nEx+'</b><span>papers ('+nOpen+' open)</span></div></div>'+
   '<p class="sm"><b>'+esc(pub)+'</b></p>'+act+
   (SA&&SRVS.on?'<ul class="rules sm"><li>Save before a sitting, not during one. A device already inside a test keeps the version it started with.</li><li>A device with no internet shows the last version it fetched.</li><li>The page file download is a backup copy and is not needed for normal updates.</li></ul>':SA?'<ul class="rules sm"><li>Upload the new page before a sitting, not during one. Devices pick it up the next time they open the link with internet.</li><li>The file must be saved as <b>index.html</b> in the same folder as the old one, replacing it.</li><li>Changes you make here show for children on this device straight away. Other devices see them after you upload.</li></ul>':'<ul class="rules sm"><li>Publish before a sitting, not during one. Open pages reload to the new version.</li><li>Other devices can only open the page after you share its link from the Share menu in Claude.</li><li>Changes you make here show for children on this device straight away. Other devices see them after you publish.</li></ul>')+'</section>'+
+  licCard()+
   '<section class="card stack"><div><h2>Setup backup</h2><p class="muted" style="margin-top:4px">A file with your classes, lists and papers. Restore it on another device, or keep it as a copy.</p></div>'+
   '<div class="row"><button class="btn" data-act="export-setup">Save setup file</button><label class="btn" style="display:inline-block">Restore setup file<input id="f-setup" type="file" accept=".json,application/json" hidden></label></div>'+
   (st.pending&&st.pending.kind==='setup'?'<div class="note stack"><span>Replace the setup on this device with <b>'+esc(st.pending.name)+'</b>? It then shows as unpublished.</span><div class="row"><button class="btn danger small" data-act="apply-setup">Replace</button><button class="btn small" data-act="cancel-pending">Cancel</button></div></div>':'')+'</section>'+

@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ExamDesk Console</title>
+<style>
+:root{--bg:#f4f6fa;--card:#fff;--ink:#14213d;--mut:#5b6679;--line:#e1e6ef;--navy:#1b2a4e;--green:#1f9d63;--amber:#c27a00;--red:#c0392b;--grey:#6b7385;--blue:#2c5fd0}
+@media (prefers-color-scheme:dark){:root{--bg:#10151f;--card:#18202e;--ink:#e8edf6;--mut:#9aa6bb;--line:#273146;--navy:#8fb0ff;--green:#3ec88a;--amber:#e3a33a;--red:#ef6a5b;--grey:#8993a8;--blue:#7ea4ff}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+.wrap{max-width:1040px;margin:0 auto;padding:16px}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+h1{margin:0;font-size:20px}h1 small{display:block;font-size:12px;font-weight:500;color:var(--mut)}
+button,input,select,textarea{font:inherit;color:inherit}
+.btn{border:1px solid var(--line);background:var(--card);padding:7px 12px;border-radius:9px;cursor:pointer}
+.btn:hover{border-color:var(--blue)}.btn:disabled{opacity:.5;cursor:default}.btn.p{background:var(--navy);color:#fff;border-color:var(--navy)}
+@media (prefers-color-scheme:dark){.btn.p{color:#0c1220}}
+.btn.d{color:var(--red)}.btn.sm{padding:4px 9px;font-size:12.5px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
+@media (max-width:620px){.stats{grid-template-columns:repeat(2,1fr)}}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px}.stat b{font-size:22px;display:block}.stat span{color:var(--mut);font-size:12.5px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+th{font-size:12px;color:var(--mut);font-weight:600;text-transform:uppercase;letter-spacing:.03em}tr:last-child td{border-bottom:0}
+tbody tr{cursor:pointer}tbody tr:hover{background:rgba(120,140,190,.08)}tr.sel{background:rgba(120,140,190,.14)}
+.badge{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600;border:1px solid;white-space:nowrap}
+.b-active{color:var(--green);border-color:var(--green)}.b-grace{color:var(--amber);border-color:var(--amber)}.b-expired{color:var(--red);border-color:var(--red)}.b-suspended,.b-none,.b-down,.b-load{color:var(--grey);border-color:var(--grey)}.b-deactivated{color:#fff;background:var(--red);border-color:var(--red)}
+.bar{height:6px;background:var(--line);border-radius:9px;overflow:hidden;width:110px;margin-top:4px}.bar i{display:block;height:100%;background:var(--blue)}.bar i.over{background:var(--red)}
+.mut{color:var(--mut)}.mono{font-variant-numeric:tabular-nums}
+.grid{display:grid;grid-template-columns:1.5fr 1fr;gap:14px;align-items:start}@media (max-width:860px){.grid{grid-template-columns:1fr}}
+.panel{padding:14px}.panel h2{margin:0 0 10px;font-size:16px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+label{display:block;font-size:12.5px;font-weight:600;margin:10px 0 3px}
+input,select,textarea{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg)}textarea{min-height:64px;resize:vertical}
+input[type=checkbox],input[type=radio]{width:auto}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.row>*{flex:1 1 120px}.row.tight>*{flex:0 0 auto}
+.log{margin:8px 0 0;padding:0;list-style:none;font-size:13px}.log li{padding:6px 0;border-bottom:1px solid var(--line)}.log li:last-child{border-bottom:0}
+.opt{border:1px solid var(--line);border-radius:10px;padding:9px 11px;margin-top:8px;display:flex;gap:9px;align-items:flex-start;cursor:pointer}.opt input{margin-top:3px}
+.opt.on{border-color:var(--blue);background:rgba(44,95,208,.07)}
+.msg{margin-top:10px;padding:8px 10px;border-radius:9px;font-size:13px;border:1px solid var(--line)}.msg.err{color:var(--red);border-color:var(--red)}.msg.ok{color:var(--green);border-color:var(--green)}
+.toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--navy);color:#fff;padding:9px 16px;border-radius:10px;font-size:13px;opacity:0;transition:.25s;pointer-events:none;max-width:90vw}
+@media (prefers-color-scheme:dark){.toast{color:#0c1220}}.toast.on{opacity:1}
+.hint{border:1px dashed var(--line);border-radius:12px;padding:10px 12px;margin-top:14px;color:var(--mut);font-size:13px}
+.empty{padding:28px 16px;text-align:center;color:var(--mut)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>ExamDesk Console<small>Licences for the schools you host</small></h1>
+    <div class="row tight">
+      <button class="btn" id="add">+ Add school</button>
+      <button class="btn" id="refresh">Refresh</button>
+      <button class="btn" id="exp">Export my notes</button>
+      <label class="btn" style="margin:0;font-weight:400">Import notes<input id="imp" type="file" accept=".json,application/json" hidden></label>
+    </div>
+  </header>
+  <div class="stats" id="stats"></div>
+  <div class="grid">
+    <div class="card" style="overflow:auto" id="listcard"></div>
+    <div class="card panel" id="detail"></div>
+  </div>
+  <div class="hint">Status is read live from each school's site. Your key is only needed when you press a button that changes something. Notes and the school list live in this browser on this PC; use <b>Export my notes</b> for a backup.</div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+'use strict';
+const DAY=864e5,PLAN={core:['Core',200],growth:['Growth',500],campus:['Campus',1000],max:['Campus Max',5000]};
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fd=t=>{try{return new Date(t).toLocaleDateString([],{dateStyle:'medium'});}catch(e){return String(t);}};
+const iso=t=>{const d=new Date(t);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');};
+const store={
+  get(k,def){try{const v=localStorage.getItem(k);return v==null?def:JSON.parse(v);}catch(e){return def;}},
+  set(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true;}catch(e){return false;}},
+  del(k){try{localStorage.removeItem(k);}catch(e){}}
+};
+let schools=store.get('xdc:schools',[]);
+let keys=store.get('xdc:keys',{});
+let sess={};            // keys typed this session, kept in memory only
+let live={};            // id -> {loading, err, lic}
+let sel=schools.length?schools[0].id:null, adding=false, note={}; // note: id -> {t:'ok'|'err', m}
+const save=()=>store.set('xdc:schools',schools);
+const toast=m=>{const t=$('toast');t.textContent=m;t.classList.add('on');clearTimeout(toast.h);toast.h=setTimeout(()=>t.classList.remove('on'),2600);};
+const base=u=>{u=String(u||'').trim().replace(/\s+/g,'');if(!u)return '';if(!/^https?:\/\//i.test(u))u='https://'+u;try{return new URL(u).origin;}catch(e){return '';}};
+const nextId=()=>schools.reduce((a,s)=>Math.max(a,s.id),0)+1;
+
+async function call(s,method,body,key){
+  const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),9000);
+  try{
+    const h={};if(body)h['content-type']='application/json';if(key)h['x-vendor']=key;
+    const r=await fetch(base(s.url)+'/api/licence',{method,headers:h,body:body?JSON.stringify(body):undefined,cache:'no-store',signal:ctl.signal});
+    const j=await r.json().catch(()=>null);
+    return {status:r.status,j};
+  }catch(e){return {status:0,j:null};}finally{clearTimeout(t);}
+}
+async function load(s){
+  live[s.id]={loading:true};draw();
+  const r=await call(s,'GET');
+  if(r.status===200&&r.j&&r.j.ok)live[s.id]={lic:r.j.licence};
+  else if(r.status===404||(r.status===200&&!r.j))live[s.id]={err:'This address is not an ExamDesk site with licences (is it the new version?)'};
+  else live[s.id]={err:'Could not reach this site'};
+  draw();
+}
+const loadAll=()=>Promise.all(schools.map(load));
+
+function view(s){
+  const v=live[s.id]||{};
+  if(v.loading)return ['load','Checking…',null];
+  if(v.err)return ['down','Unreachable',null];
+  const L=v.lic;if(!L||!L.set)return ['none','No licence',L];
+  const m={active:'Active',grace:'Overdue (grace)',expired:'Expired',suspended:'Suspended',deactivated:'Switched off'};
+  return [L.status,m[L.status]||L.status,L];
+}
+function stats(){
+  const c={active:0,over:0,susp:0,none:0};
+  schools.forEach(s=>{const k=view(s)[0];if(k==='active')c.active++;else if(k==='grace'||k==='expired')c.over++;else if(k==='suspended'||k==='deactivated')c.susp++;else c.none++;});
+  $('stats').innerHTML=[['Active',c.active],['Overdue or expired',c.over],['Suspended or off',c.susp],['No licence or unreachable',c.none]].map(x=>'<div class="stat"><b>'+x[1]+'</b><span>'+x[0]+'</span></div>').join('');
+}
+function list(){
+  if(!schools.length){$('listcard').innerHTML='<div class="empty"><b>No schools yet</b><p>Press <b>+ Add school</b> and type the school’s name and its site link.</p></div>';return;}
+  $('listcard').innerHTML='<table><thead><tr><th>School</th><th>Plan</th><th>Children</th><th>Paid until</th><th>Status</th></tr></thead><tbody>'+schools.map(s=>{
+    const[k,l,L]=view(s);
+    const kids=L&&L.set?'<span class="mono">'+L.students+' / '+L.cap+'</span><div class="bar"><i class="'+(L.students>L.cap?'over':'')+'" style="width:'+Math.min(100,Math.round(L.students/L.cap*100))+'%"></i></div>':(L?'<span class="mono">'+L.students+'</span>':'<span class="mut">—</span>');
+    return '<tr data-id="'+s.id+'" class="'+(s.id===sel&&!adding?'sel':'')+'"><td><b>'+esc(s.name)+'</b><div class="mut" style="font-size:12px">'+esc(s.url)+'</div></td><td>'+(L&&L.set?esc((PLAN[L.plan]||[L.plan])[0]):'<span class="mut">—</span>')+'</td><td>'+kids+'</td><td>'+(L&&L.set?fd(L.paidUntil):'<span class="mut">—</span>')+'</td><td><span class="badge b-'+k+'">'+l+'</span></td></tr>';
+  }).join('')+'</tbody></table>';
+  document.querySelectorAll('#listcard tbody tr').forEach(r=>r.onclick=()=>{sel=+r.dataset.id;adding=false;draw();});
+}
+function addPane(){
+  $('detail').innerHTML='<h2>Add a school</h2><label>School name</label><input id="n-name" placeholder="e.g. Edupeak Montessori"><label>Site link</label><input id="n-url" placeholder="examdesk-edupeak.netlify.app"><div class="row" style="margin-top:12px"><button class="btn p" id="n-ok">Add school</button><button class="btn" id="n-no">Cancel</button></div><div id="n-msg"></div>';
+  $('n-no').onclick=()=>{adding=false;draw();};
+  $('n-ok').onclick=()=>{
+    const name=$('n-name').value.trim(),u=base($('n-url').value);
+    if(!name||!u){$('n-msg').innerHTML='<div class="msg err">Type a name and a valid site link.</div>';return;}
+    const s={id:nextId(),name,url:u.startsWith('http://')?u:u.replace(/^https:\/\//,''),notes:'',log:[{t:Date.now(),m:'Added'}]};
+    schools.push(s);save();sel=s.id;adding=false;draw();load(s);
+  };
+}
+function detail(){
+  if(adding)return addPane();
+  const s=schools.find(x=>x.id===sel),d=$('detail');
+  if(!s){d.innerHTML='<p class="mut">Pick a school, or add one.</p>';return;}
+  const[k,l,L]=view(s),n=note[s.id];
+  const has=L&&L.set;
+  const def=has?L:{plan:'core',cap:200,paidUntil:Date.now()+91*DAY,graceDays:14,enforce:'block',state:'on'};
+  const state=has?L.state:'on';
+  const act=!has?'<p class="mut">Save a licence first, then you can suspend or switch off.</p>':
+    state==='on'?
+    '<div class="opt on" data-lvl="suspended"><input type="radio" name="lvl" checked><div><b>Suspend</b><div class="mut">Examiners can look and export results but cannot save changes. Children can still sit tests and results still arrive. Good for late payment.</div></div></div>'+
+    '<div class="opt" data-lvl="off"><input type="radio" name="lvl"><div><b>Switch off</b><div class="mut">No new sittings can start and examiners see a notice. Stored results are kept. For ended contracts.</div></div></div>'+
+    '<div class="row tight" style="margin-top:10px"><button class="btn d" id="go">Suspend school</button></div>':
+    '<p>This school is <b>'+(state==='off'?'switched off':'suspended')+'</b>.</p><div class="row tight"><button class="btn p" id="react">Reactivate</button></div>';
+  const logs=(s.log||[]).slice(-15).reverse().map(x=>'<li><span class="mut">'+fd(x.t)+'</span> '+esc(x.m)+'</li>').join('');
+  d.innerHTML='<h2>'+esc(s.name)+'<span class="badge b-'+k+'">'+l+'</span></h2><div class="mut" style="font-size:12.5px">'+esc(s.url)+(live[s.id]&&live[s.id].err?' · '+esc(live[s.id].err):'')+'</div>'+
+  '<div class="row"><div><label>Plan</label><select id="plan">'+Object.keys(PLAN).map(p=>'<option value="'+p+'"'+(p===def.plan?' selected':'')+'>'+PLAN[p][0]+' ('+PLAN[p][1]+')</option>').join('')+'</select></div><div><label>Student cap</label><input id="cap" type="number" min="1" value="'+def.cap+'"></div></div>'+
+  '<div class="row"><div><label>Paid until</label><input id="paid" type="date" value="'+iso(def.paidUntil)+'"></div><div><label>&nbsp;</label><button class="btn" id="plus" type="button">+ 1 term (about 3 months)</button></div></div>'+
+  '<div class="row"><div><label>Grace days after due</label><input id="grace" type="number" min="0" max="90" value="'+(def.graceDays==null?14:def.graceDays)+'"></div><div><label>Over the cap</label><select id="enf"><option value="block"'+(def.enforce!=='warn'?' selected':'')+'>Block adding children</option><option value="warn"'+(def.enforce==='warn'?' selected':'')+'>Warn only</option></select></div></div>'+
+  '<label>Your vendor key</label><input id="key" type="password" autocomplete="off" value="'+esc(keys[s.id]||sess[s.id]||'')+'"><label class="row tight" style="font-weight:400;margin-top:6px"><input type="checkbox" id="rem"'+(keys[s.id]?' checked':'')+'> Remember on this PC</label>'+
+  '<div class="row tight" style="margin-top:10px"><button class="btn p" id="save">Save licence</button><button class="btn" id="re">Refresh</button></div>'+
+  (n?'<div class="msg '+n.t+'">'+esc(n.m)+'</div>':'')+
+  '<label>Notes (kept on this PC)</label><textarea id="notes">'+esc(s.notes)+'</textarea>'+
+  '<h2 style="margin-top:14px;font-size:14px">Switch on / off</h2>'+act+
+  '<h2 style="margin-top:14px;font-size:14px">Recent changes</h2><ul class="log">'+(logs||'<li class="mut">Nothing yet</li>')+'</ul>'+
+  '<div class="row tight" style="margin-top:14px"><button class="btn d sm" id="rm">Remove from my list</button></div>';
+  const q=id=>$(id);
+  q('plan').onchange=()=>{q('cap').value=PLAN[q('plan').value][1];};
+  q('plus').onclick=()=>{const b=Math.max(new Date(q('paid').value+'T12:00:00').getTime()||0,Date.now());q('paid').value=iso(b+91*DAY);};
+  q('notes').oninput=()=>{s.notes=q('notes').value;save();};
+  q('re').onclick=()=>load(s);
+  q('rm').onclick=()=>{if(!confirm('Remove '+s.name+' from your list? Its licence on the site is not changed.'))return;schools=schools.filter(x=>x.id!==s.id);delete keys[s.id];store.set('xdc:keys',keys);save();sel=schools.length?schools[0].id:null;draw();};
+  const getKey=()=>{const v=q('key').value.trim();if(!v){setNote(s,'err','Type your vendor key first.');return null;}
+    sess[s.id]=v;if(q('rem').checked)keys[s.id]=v;else delete keys[s.id];store.set('xdc:keys',keys);return v;};
+  q('save').onclick=async()=>{
+    const key=getKey();if(!key)return;
+    const paid=new Date(q('paid').value+'T23:59:59').getTime();
+    if(!Number.isFinite(paid)){setNote(s,'err','Choose a paid-until date.');return;}
+    const body={plan:q('plan').value,cap:parseInt(q('cap').value,10),paidUntil:paid,graceDays:parseInt(q('grace').value,10),enforce:q('enf').value,school:s.name};
+    await put(s,body,key,'Saved: '+PLAN[body.plan][0]+', cap '+body.cap+', paid until '+fd(paid));
+  };
+  if(q('go')){let lvl='suspended';
+    d.querySelectorAll('.opt').forEach(o=>o.onclick=()=>{lvl=o.dataset.lvl;d.querySelectorAll('.opt').forEach(x=>{x.classList.toggle('on',x===o);x.querySelector('input').checked=x===o;});q('go').textContent=lvl==='off'?'Switch off school':'Suspend school';});
+    q('go').onclick=async()=>{const key=getKey();if(!key)return;
+      if(lvl==='off'&&!confirm('Switch off '+s.name+'? Children will not be able to start tests.'))return;
+      await put(s,stateBody(L,lvl),key,lvl==='off'?'Switched off':'Suspended');};}
+  if(q('react'))q('react').onclick=async()=>{const key=getKey();if(!key)return;await put(s,stateBody(L,'on'),key,'Reactivated');};
+}
+const stateBody=(L,state)=>({plan:L.plan,cap:L.cap,paidUntil:L.paidUntil,graceDays:L.graceDays,enforce:L.enforce,school:L.school,state});
+function setNote(s,t,m){note[s.id]={t,m};draw();}
+async function put(s,body,key,what){
+  setNote(s,'ok','Saving…');
+  const r=await call(s,'PUT',body,key);
+  if(r.status===200&&r.j&&r.j.ok){
+    live[s.id]={lic:r.j.licence};
+    s.log=(s.log||[]).concat([{t:Date.now(),m:what}]).slice(-100);save();
+    note[s.id]={t:'ok',m:'Done. The site now reports: '+(({active:'Active',grace:'Overdue (grace)',expired:'Expired',suspended:'Suspended',deactivated:'Switched off'})[r.j.licence.status]||r.j.licence.status)+'.'};
+    draw();toast(what);return;
+  }
+  const e=r.j&&r.j.error;
+  const m=r.status===0?'Could not reach the site. Check the link and your internet.':
+    e==='forbidden'?'That key was not accepted. Check it matches XD_VENDOR_KEY on this site.':
+    e==='vendor_disabled'?'This site has no vendor key set. Add XD_VENDOR_KEY in Netlify (16+ characters), redeploy, then try again.':
+    e==='bad_cap'?'The student cap must be a whole number.':e==='bad_grace'?'Grace days must be 0 to 90.':e==='bad_date'?'Choose a valid paid-until date.':
+    r.status===404?'This site does not have the licence feature yet. Deploy the newest version first.':'The site refused the change ('+(e||r.status)+').';
+  setNote(s,'err',m);
+}
+function draw(){stats();list();detail();}
+
+$('add').onclick=()=>{adding=true;draw();};
+$('refresh').onclick=()=>{loadAll();toast('Refreshing…');};
+$('exp').onclick=()=>{
+  const blob=new Blob([JSON.stringify({app:'examdesk-console',v:1,exportedAt:Date.now(),schools},null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='examdesk-console-notes-'+iso(Date.now())+'.json';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},500);
+  toast('Notes saved to your Downloads (no keys are included)');
+};
+$('imp').onchange=async e=>{
+  const f=e.target.files[0];e.target.value='';if(!f)return;
+  try{
+    const j=JSON.parse(await f.text());
+    if(!j||j.app!=='examdesk-console'||!Array.isArray(j.schools))throw new Error('bad');
+    if(!confirm('Replace your school list and notes with the '+j.schools.length+' school(s) in this file?'))return;
+    schools=j.schools.filter(s=>s&&s.name&&s.url).map((s,i)=>({id:i+1,name:String(s.name),url:String(s.url),notes:String(s.notes||''),log:Array.isArray(s.log)?s.log.slice(-100):[]}));
+    keys={};store.set('xdc:keys',keys);save();live={};note={};sel=schools.length?schools[0].id:null;adding=false;draw();loadAll();toast('Notes restored');
+  }catch(err){toast('That file is not an ExamDesk Console backup.');}
+};
+draw();loadAll();
+</script>
+</body>
+</html>

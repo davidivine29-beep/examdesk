@@ -5,14 +5,16 @@
   "type": "module",
   "description": "ExamDesk: a class-based computer-based test app for schools.",
   "scripts": {
-    "test": "node test/handler.test.mjs",
-    "build": "node build.mjs"
+    "test": "node test/handler.test.mjs && STORE=d1 node --no-warnings test/handler.test.mjs",
+    "build": "node build.mjs",
+    "build:cloudflare": "node build-cloudflare.mjs"
   },
   "dependencies": {
     "@netlify/blobs": "^8.1.0"
   },
   "devDependencies": {
     "jszip": "3.10.1",
-    "xlsx": "0.18.5"
+    "xlsx": "0.18.5",
+    "esbuild": "0.24.2"
   }
 }
