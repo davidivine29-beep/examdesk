@@ -177,7 +177,7 @@ export function makeHandler(store, opts = {}) {
       // ---- results: candidate devices send them; only the examiner can read them
       if (path === '/api/result' && req.method === 'POST') {
         const text = await req.text();
-        if (text.length > 1024 * 1024) return json({ ok: false, error: 'too_large' }, 413);
+        if (text.length > 2 * 1024 * 1024) return json({ ok: false, error: 'too_large' }, 413);
         const body = JSON.parse(text);
         const list = Array.isArray(body.results) ? body.results.slice(0, 50) : [];
         const raw = await store.get('setup');
@@ -187,7 +187,7 @@ export function makeHandler(store, opts = {}) {
         for (const r of list) {
           const id = r && r.id;
           if (!ID.test(String(id))) { rejected.push({ id, reason: 'bad' }); continue; }
-          if (JSON.stringify(r).length > 30000) { rejected.push({ id, reason: 'too_large' }); continue; }
+          if (JSON.stringify(r).length > 100000) { rejected.push({ id, reason: 'too_large' }); continue; }
           if (await store.get('i:' + id)) { accepted.push(id); continue; } // already have it
           const cls = (setup.classes || []).find((c) => c.id === r.cid);
           const exam = cls && (cls.exams || []).find((e) => e.id === r.eid);
@@ -224,8 +224,69 @@ export function makeHandler(store, opts = {}) {
       if (path === '/api/results' && req.method === 'DELETE') {
         const c = await checkAdmin(req.headers.get('x-admin') || '');
         if (!c.ok) return bad(c);
-        for (const p of ['r:', 'i:', 'n:']) for (const k of await store.list(p)) await store.delete(k);
+        for (const p of ['r:', 'i:', 'n:', 'm:', 'mp:']) for (const k of await store.list(p)) await store.delete(k);
         return json({ ok: true });
+      }
+
+      // ---- marks: teacher marks on written answers, with their change record. Examiner only; saving is licence-gated like the setup.
+      if (path === '/api/marks' && req.method === 'POST') {
+        const c = await checkAdmin(req.headers.get('x-admin') || '');
+        if (!c.ok) return bad(c);
+        const lic = await getLicence();
+        if (lic) {
+          const raw0 = await store.get('setup');
+          const v = licView(lic, raw0 ? JSON.parse(raw0) : null, Date.now());
+          if (v.status === 'deactivated') return json({ ok: false, error: 'licence_off', licence: v }, 402);
+          if (v.status === 'suspended') return json({ ok: false, error: 'licence_suspended', licence: v }, 402);
+          if (v.status === 'expired') return json({ ok: false, error: 'licence_expired', licence: v }, 402);
+        }
+        const text = await req.text();
+        if (text.length > 1024 * 1024) return json({ ok: false, error: 'too_large' }, 413);
+        const body = JSON.parse(text);
+        const list = Array.isArray(body.marks) ? body.marks.slice(0, 100) : [];
+        const accepted = [], rejected = [];
+        const num = (x) => typeof x === 'number' && Number.isFinite(x);
+        const hkey = (h) => h.at + '|' + h.m + '|' + h.from + '|' + h.by;
+        for (const it of list) {
+          const rid = it && it.rid, qi = it && it.qi, rec = it && it.rec;
+          const key = rid + '|' + qi;
+          if (!ID.test(String(rid)) || !Number.isInteger(qi) || qi < 0 || qi > 999 || !rec || !num(rec.m) || rec.m < 0 || rec.m > 1000 || !num(rec.at) || typeof rec.by !== 'string') { rejected.push({ key, reason: 'bad' }); continue; }
+          if (!(await store.get('i:' + rid))) { rejected.push({ key, reason: 'unknown_result' }); continue; }
+          const hist = (Array.isArray(rec.h) ? rec.h : []).filter((h) => h && num(h.m) && num(h.from) && num(h.at) && typeof h.by === 'string').slice(0, 60)
+            .map((h) => ({ m: h.m, from: h.from, by: h.by.slice(0, 60), at: h.at }));
+          const mine = { m: rec.m, by: rec.by.slice(0, 60), at: rec.at, h: hist };
+          const ptr = await store.get('mp:' + rid + ':' + qi);
+          let cur = null;
+          if (ptr) { const ov = await store.get('m:' + pad(parseInt(ptr, 10)) + ':' + rid + ':' + qi); if (ov) cur = JSON.parse(ov).rec; }
+          let out = mine;
+          if (cur) {
+            const win = cur.at > mine.at ? cur : mine;
+            const seen = new Set(), all = [];
+            for (const h of cur.h.concat(mine.h)) { const k = hkey(h); if (!seen.has(k)) { seen.add(k); all.push(h); } }
+            all.sort((a, b) => a.at - b.at);
+            out = { m: win.m, by: win.by, at: win.at, h: all.slice(-60) };
+          }
+          const at = Math.max(Date.now(), ptr ? parseInt(ptr, 10) + 1 : 0);
+          if (ptr) await store.delete('m:' + pad(parseInt(ptr, 10)) + ':' + rid + ':' + qi);
+          await store.set('m:' + pad(at) + ':' + rid + ':' + qi, JSON.stringify({ rid, qi, rec: out }));
+          await store.set('mp:' + rid + ':' + qi, String(at));
+          accepted.push(key);
+        }
+        return json({ ok: true, accepted, rejected });
+      }
+
+      if (path === '/api/marks' && req.method === 'GET') {
+        const c = await checkAdmin(req.headers.get('x-admin') || '');
+        if (!c.ok) return bad(c);
+        const since = parseInt(new URL(req.url).searchParams.get('since') || '0', 10) || 0;
+        const keys = (await store.list('m:')).filter((k) => parseInt(k.slice(2, 15), 10) > since);
+        const marks = [];
+        let upTo = since;
+        for (const k of keys.slice(0, 500)) {
+          const v = await store.get(k);
+          if (v) { marks.push(JSON.parse(v)); upTo = Math.max(upTo, parseInt(k.slice(2, 15), 10)); }
+        }
+        return json({ ok: true, marks, upTo, more: keys.length > 500 });
       }
 
       return json({ ok: false, error: 'not_found' }, 404);

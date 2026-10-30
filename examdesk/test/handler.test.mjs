@@ -249,5 +249,38 @@ ok(bad403.status === 403 && bad403.headers.get('access-control-allow-origin') ==
 const noCors = await h4(new Request('http://x/api/results'));
 ok(!noCors.headers.get('access-control-allow-origin'), 'other addresses are NOT opened to other sites');
 
+
+// ---------- marks (teacher marks with a change record)
+mem.clear();
+await call4('PUT', '/api/setup', { setup: setupR, baseStamp: 0 }, { 'x-admin': A });
+await call4('POST', '/api/result', { results: [rs('mark0001')] });
+const mk = (m, at, h = []) => ({ rid: 'mark0001', qi: 2, rec: { m, by: 'Mrs Ade', at, h } });
+r = await call4('POST', '/api/marks', { marks: [mk(3, 1000, [{ m: 3, from: 1, by: 'Mrs Ade', at: 1000 }])] });
+ok(r.s === 401, 'marks cannot be saved without the passcode');
+r = await call4('POST', '/api/marks', { marks: [mk(3, 1000, [{ m: 3, from: 1, by: 'Mrs Ade', at: 1000 }])] }, { 'x-admin': A });
+ok(r.s === 200 && r.j.accepted.length === 1 && !r.j.rejected.length, 'a mark is accepted with the passcode');
+r = await call4('POST', '/api/marks', { marks: [mk(4, 2000, [{ m: 4, from: 3, by: 'Mr Bako', at: 2000 }])] }, { 'x-admin': A });
+let gm = await call4('GET', '/api/marks?since=0', null, { 'x-admin': A });
+ok(gm.s === 200 && gm.j.marks.length === 1 && gm.j.marks[0].rec.m === 4, 'the newer mark wins');
+ok(gm.j.marks[0].rec.h.length === 2, 'the change record from both edits is kept');
+r = await call4('POST', '/api/marks', { marks: [mk(3, 1000, [{ m: 3, from: 1, by: 'Mrs Ade', at: 1000 }])] }, { 'x-admin': A });
+gm = await call4('GET', '/api/marks?since=0', null, { 'x-admin': A });
+ok(gm.j.marks[0].rec.m === 4 && gm.j.marks[0].rec.h.length === 2, 'an older copy arriving late changes nothing');
+const upM = gm.j.upTo;
+gm = await call4('GET', '/api/marks?since=' + upM, null, { 'x-admin': A });
+ok(gm.j.marks.length === 0, 'asking since the last pull returns nothing new');
+gm = await call4('GET', '/api/marks');
+ok(gm.s === 401, 'marks cannot be read without the passcode');
+r = await call4('POST', '/api/marks', { marks: [{ rid: 'nope0000', qi: 0, rec: { m: 1, by: 'x', at: 5, h: [] } }, { rid: 'mark0001', qi: 1, rec: { m: -2, by: 'x', at: 5, h: [] } }] }, { 'x-admin': A });
+ok(r.j.rejected.length === 2 && !r.j.accepted.length, 'a mark for an unknown result or a negative mark is refused');
+await call4('PUT', '/api/licence', { plan: 'core', paidUntil: Date.now() + 86400000, state: 'suspended' }, V);
+r = await call4('POST', '/api/marks', { marks: [mk(5, 3000)] }, { 'x-admin': A });
+ok(r.s === 402 && /licence_/.test(r.j.error), 'marks cannot be saved while the licence is suspended');
+gm = await call4('GET', '/api/marks?since=0', null, { 'x-admin': A });
+ok(gm.s === 200 && gm.j.marks.length === 1, 'marks can still be read while suspended');
+r = await call4('DELETE', '/api/results', null, { 'x-admin': A });
+gm = await call4('GET', '/api/marks?since=0', null, { 'x-admin': A });
+ok(gm.j.marks.length === 0, 'clearing results also clears marks');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

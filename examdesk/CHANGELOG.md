@@ -1,3 +1,13 @@
+## Written questions and marking (stage 2, in every tier)
+- Three question types: multiple choice, fill in the blank (auto-marked) and theory (keyword rubric).
+- Marks: a section\u2019s marks are shared equally between its questions, or a question can state its own (`[3 marks]`, parts `4a.` `4b.`). Children see the total marks.
+- Fill in the blank: case, spacing and trailing punctuation ignored; `1,000` and `1000` are the same; a one-letter slip in a word of five or more letters earns half marks; several accepted answers with `|`.
+- Theory: the software ticks rubric keywords (synonyms with `/`, a mark after a keyword with `(2)`), suggests a mark, and the result stays **Provisional** until the teacher confirms or changes each theory mark. Papers can also have theory written on paper, with marks typed in by the teacher.
+- Marking tab: keyword highlights, per-question marks, confirm one or all, accept a spelling, marker name. Every change is kept (original, who, when) and syncs between examiner devices (`/api/marks`).
+- Results, child pages, register, analysis and the .xlsx exports show Provisional or Final.
+- Downloadable .docx templates (multiple choice, fill in the blank, theory, all types) and the same text for the paste box.
+- Server: results may carry typed answers (up to 100 KB each); `/api/marks` is examiner-only and follows the licence rules; clearing results clears marks.
+
 ## Licence foundation (stage 1)
 - Each school site now has a licence record: plan (core, growth, campus, max), student cap, paid-until date, grace days and enforcement (block or warn).
 - Only the vendor key can set it (environment variable `XD_VENDOR_KEY` on the site; at least 16 characters). Use `tools/set-licence.mjs`.

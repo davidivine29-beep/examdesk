@@ -18,4 +18,4 @@ const vendorKey = (globalThis.Netlify && Netlify.env.get('XD_VENDOR_KEY')) || pr
 const handle = makeHandler(store, { vendorKey });
 
 export default async (req) => handle(req);
-export const config = { path: ['/api/setup', '/api/login', '/api/passcode', '/api/result', '/api/results', '/api/licence'] };
+export const config = { path: ['/api/setup', '/api/login', '/api/passcode', '/api/result', '/api/results', '/api/marks', '/api/licence'] };

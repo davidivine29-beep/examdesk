@@ -32,6 +32,14 @@ You need a free [GitHub](https://github.com) account and a free [Netlify](https:
 Edit in ExamDesk and press **Save to server**. Devices pick the change up the next time they open the page.
 Do not save during a sitting: a child already inside a test keeps the version they started with.
 
+## Written questions and templates
+Papers can mix multiple choice, fill-in-the-blank and theory questions. In the examiner page open **Papers** and use **Templates to fill in** to download a Word file for each kind (or put the sample in the paste box). The templates explain the format inside them.
+
+- **Marks:** put the section marks in the heading (`Section B | 10 marks`, or `| 2 marks each`) and they are shared equally; end a question with `[3 marks]` to give it its own.
+- **Fill in the blank:** gaps are `____`; the next line is `Answer: photosynthesis | photosynthesise`. Two gaps use `Answer 1:` and `Answer 2:`.
+- **Theory:** a `Rubric: sunlight | carbon dioxide / CO2 | chlorophyll (2)` line lists the keywords.
+- Theory scores stay **Provisional** until a teacher confirms them in the **Marking** tab. Every change is kept with the marker\u2019s name and the time.
+
 ## Results
 When a child submits, the paper is marked on their device and the result is saved there first. It is then sent
 to the school server in the background, and the child sees either "saved to the school server" or
