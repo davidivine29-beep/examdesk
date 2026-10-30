@@ -685,7 +685,7 @@ const ses={
   set(k,v){smem[k]=v;try{sessionStorage.setItem(k,JSON.stringify(v));}catch(e){}},
   del(k){delete smem[k];try{sessionStorage.removeItem(k);}catch(e){}}
 };
-const K_DRAFT='xd2_draft',K_RES='xd2_results',K_SES='xd2_session',K_AUTH='xd2_auth',K_AFTER='xd2_after',K_SRV='xd2_srv',K_H2='xd2_h2',K_SYNCED='xd2_synced',K_REJ='xd2_rejected',K_PULL='xd2_pull',K_HASSRV='xd2_hassrv',K_MARKS='xd2_marks',K_MQ='xd2_markq',K_MPULL='xd2_markpull',K_MARKER='xd2_marker';
+const K_USER='xd2_user',K_DRAFT='xd2_draft',K_RES='xd2_results',K_SES='xd2_session',K_AUTH='xd2_auth',K_AFTER='xd2_after',K_SRV='xd2_srv',K_H2='xd2_h2',K_SYNCED='xd2_synced',K_REJ='xd2_rejected',K_PULL='xd2_pull',K_HASSRV='xd2_hassrv',K_MARKS='xd2_marks',K_MQ='xd2_markq',K_MPULL='xd2_markpull',K_MARKER='xd2_marker';
 
 /* ---------- setup (published) and working copy ---------- */
 let SETUP0=JSON.parse(document.getElementById('xd-setup').textContent);
@@ -752,7 +752,19 @@ function reindex(){
   R.slice().sort((a,b)=>a.submittedAt-b.submittedAt).forEach(r=>IDX.set(r.cid+'|'+nk(r.name)+'|'+r.eid,effective(r)));
 }
 const saveR=()=>{store.set(K_RES,R);reindex();};
-const resFor=(cid,name,eid)=>IDX.get(cid+'|'+nk(name)+'|'+eid)||null;
+/* Growth: a signed-in teacher (ME) only sees and marks what they are assigned to. The server enforces the same rules. */
+let ME=ses.get(K_USER)||null;
+const armOf=(c,name)=>{const m=c.armOf||{},k=nk(name);for(const n of Object.keys(m))if(nk(n)===k)return m[n]||'';return '';};
+function canActR(r){
+  if(!ME)return true;
+  const c=cls(r.cid);if(!c)return false;
+  const ex=c.exams.find(e=>e.id===r.eid),arm=armOf(c,r.name);
+  if((ME.form||[]).some(f=>f.cid===c.id&&(!f.arm||f.arm===arm)))return true;
+  return !!ex&&(ME.subj||[]).some(x=>x.cid===c.id&&nk(x.subject)===nk(ex.subject));
+}
+const myClasses=()=>ME?W.classes.filter(c=>(ME.form||[]).some(f=>f.cid===c.id)||(ME.subj||[]).some(x=>x.cid===c.id)):W.classes;
+const authHdr=()=>{const h2=ses.get(K_H2);return ME?{'x-admin':h2,'x-user':ME.id}:{'x-admin':h2};};
+const resFor=(cid,name,eid)=>{const r=IDX.get(cid+'|'+nk(name)+'|'+eid)||null;return r&&canActR(r)?r:null;};
 reindex();
 
 const markedCount=e=>e.questions.filter(q=>qMarkable(q)).length;
@@ -1019,7 +1031,7 @@ async function pullResults(manual){
     let since=store.get(K_PULL)||0,added=0,guard=0;
     const key=r=>r.cid+'|'+nk(r.name)+'|'+r.eid+'|'+r.submittedAt;
     while(guard++<40){
-      const r=await srvFetch('/api/results?since='+since,{headers:{'x-admin':h2}});
+      const r=await srvFetch('/api/results?since='+since,{headers:authHdr()});
       if(r.status===401){ses.del(K_H2);if(manual)toast('Sign in again to refresh results.');break;}
       const j=await r.json().catch(()=>null);
       if(!j||!j.ok)break;
@@ -1041,7 +1053,7 @@ async function pullResults(manual){
 }
 
 /* ---------- teacher marks: change, keep the record, send to the server ---------- */
-const markerName=()=>String(store.get(K_MARKER)||'');
+const markerName=()=>ME?ME.name:String(store.get(K_MARKER)||'');
 const qLab=(e,i)=>{const q=e.questions[i];return q.no?q.no+(q.sub||''):String(i+1);};
 function setMark(rid,qi,val){
   const raw=R.find(x=>x.id===rid);if(!raw)return false;
@@ -1079,7 +1091,7 @@ async function flushMarks(){
     const items=[...MQ].map(k=>{const p=k.split('|'),rec=MK[p[0]]&&MK[p[0]][p[1]];return rec?{rid:p[0],qi:+p[1],rec}:null;}).filter(Boolean);
     for(let i=0;i<items.length;i+=40){
       const batch=items.slice(i,i+40);
-      const r=await srvFetch('/api/marks',{method:'POST',headers:{'content-type':'application/json','x-admin':h2},body:JSON.stringify({marks:batch})});
+      const r=await srvFetch('/api/marks',{method:'POST',headers:Object.assign({'content-type':'application/json'},authHdr()),body:JSON.stringify({marks:batch})});
       const j=await r.json().catch(()=>null);
       if(r.status===401){ses.del(K_H2);break;}
       if(!r.ok||!j||!j.ok){if(j&&/^licence_/.test(j.error||''))S.st.note='Marks are kept on this device. The server is not taking changes because of the licence ('+j.error.replace('licence_','')+').';break;}
@@ -1096,7 +1108,7 @@ async function pullMarks(manual){
   try{
     let since=store.get(K_MPULL)||0,changed=0,guard=0;
     while(guard++<40){
-      const r=await srvFetch('/api/marks?since='+since,{headers:{'x-admin':h2}});
+      const r=await srvFetch('/api/marks?since='+since,{headers:authHdr()});
       if(r.status===401){ses.del(K_H2);break;}
       const j=await r.json().catch(()=>null);
       if(!j||!j.ok)break;
@@ -1354,26 +1366,28 @@ function viewResult(){
 /* ---------- examiner views ---------- */
 function viewLogin(){
   const st=S.st,setup=!W.adminHash;
+  const tchOK=!setup&&hasTier('growth')&&SA&&SRVS.on&&W.adminHash==='srv',asT=tchOK&&!!st.asTeacher;
   return topBar('<button class="btn small" data-act="home">Candidate screen</button>')+'<div class="intro"><section class="card"><form class="form" data-form="'+(setup?'setup':'login')+'" autocomplete="off">'+
-  '<div><span class="eyebrow">Examiner</span><h1 style="margin-top:6px">'+(setup?'Create an examiner passcode':'Examiner sign-in')+'</h1></div>'+
+  '<div><span class="eyebrow">'+(asT?'Teacher':'Examiner')+'</span><h1 style="margin-top:6px">'+(setup?'Create an examiner passcode':asT?'Teacher sign-in':'Examiner sign-in')+'</h1></div>'+
   (setup?(SA&&SRVS.on?'<p class="muted">The passcode keeps candidates out of the examiner pages. The first time you press <b>Save to server</b>, this site is locked to this passcode, so do that right after you add your classes and before you share the address.</p>':'<p class="muted">The passcode keeps candidates out of the examiner pages. It is stored inside the setup, so it travels to other devices when you publish. Create it before your first publish, otherwise anyone who opens the link can create their own on their device.</p>')+
   '<label class="f">Passcode<span class="hint">At least 8 characters. A short phrase is easy to remember and hard to guess.</span><input id="a-p1" type="password" data-bind="st.p1" value="'+esc(st.p1)+'" autocomplete="new-password"></label>'+
   '<label class="f">Repeat passcode<input id="a-p2" type="password" data-bind="st.p2" value="'+esc(st.p2)+'" autocomplete="new-password"></label>':
+  (asT?'<label class="f">Your name<span class="hint">Exactly as the administrator entered it</span><input id="a-tname" type="text" data-bind="st.tname" value="'+esc(st.tname||'')+'" autocomplete="username"></label>':'')+
   '<label class="f">Passcode<input id="a-pass" type="password" data-bind="st.pass" value="'+esc(st.pass)+'" autocomplete="current-password"></label>')+
   (st.err?'<div class="err" role="alert">'+esc(st.err)+'</div>':'')+
-  '<button class="btn primary" type="submit" data-act="'+(setup?'setup':'login')+'">'+(setup?'Save passcode':'Open examiner pages')+'</button></form></section></div>';
+  '<button class="btn primary" type="submit" data-act="'+(setup?'setup':'login')+'">'+(setup?'Save passcode':asT?'Sign in':'Open examiner pages')+'</button>'+(tchOK?'<button class="btn small ghost" type="button" data-act="login-mode">'+(asT?'I am the administrator':'I am a teacher')+'</button>':'')+'</form></section></div>';
 }
 function staffBar(){
   const st=S.st;
   const cur=k=>k==='classes'?(st.page==='classes'||st.page==='class'||st.page==='child'):st.page===k;
-  const nav=[['classes','Classes'],['setup','Publish and backup']].map(([k,l])=>'<button class="navlink" data-act="spage" data-p="'+k+'" aria-current="'+(cur(k)?'page':'false')+'">'+l+'</button>').join('');
+  const nav=(ME?[['classes','Classes']]:[['classes','Classes']].concat(hasTier('growth')&&SA&&SRVS.on?[['teachers','Teachers']]:[],[['setup','Publish and backup']])).map(([k,l])=>'<button class="navlink" data-act="spage" data-p="'+k+'" aria-current="'+(cur(k)?'page':'false')+'">'+l+'</button>').join('');
   return '<header class="top"><div class="brand">'+markSvg+'<div><b>ExamDesk</b><small>'+esc(W.school||'Examiner')+'</small></div></div><nav class="snav">'+nav+'</nav>'+
-  '<div class="top-actions"><span id="dirty-badge" class="badge warn"'+(dirty?'':' hidden')+'>'+(SA?'Not in page file yet':'Unpublished changes')+'</span><button class="btn small" data-act="home">Candidate screen</button><button class="btn small" data-act="logout">Lock</button></div></header>';
+  '<div class="top-actions"><span id="dirty-badge" class="badge warn"'+(dirty?'':' hidden')+'>'+(SA?'Not in page file yet':'Unpublished changes')+'</span><button class="btn small" data-act="home">Candidate screen</button><button class="btn small" data-act="logout">'+(ME?'Sign out':'Lock')+'</button></div></header>'+(ME?'<div class="note" style="margin:0 0 14px">Signed in as <b>'+esc(ME.name)+'</b>. You see only the classes and subjects assigned to you.</div>':'');
 }
 function viewStaff(){
   const st=S.st;
   if(!st.authed)return viewLogin();
-  const body=st.page==='class'?pageClass():st.page==='child'?pageChild():st.page==='setup'?pageSetup():pageClasses();
+  const body=st.page==='class'?pageClass():st.page==='child'?pageChild():(st.page==='setup'&&!ME)?pageSetup():(st.page==='teachers'&&!ME&&hasTier('growth'))?pageTeachers():pageClasses();
   return staffBar()+
     (st.flash?'<div class="okbox" style="margin-bottom:14px" role="status">'+esc(st.flash)+'</div>':'')+
     (st.err?'<div class="err" style="margin-bottom:14px" role="alert">'+esc(st.err)+'</div>':'')+
@@ -1387,7 +1401,7 @@ function pageClasses(){
 }
 function pageClasses0(){
   const st=S.st;
-  const cards=W.classes.map(c=>{
+  const cards=myClasses().map(c=>{
     const nE=c.exams.length,open=c.exams.filter(e=>e.open).length,pr=classProgress(c);
     const pct=pr.possible?Math.round(pr.got/pr.possible*100):0;
     const line=!c.roster.length?'Class list not added yet':!nE?'No papers yet':pr.got+' of '+pr.possible+' papers written · '+open+' open';
@@ -1397,11 +1411,11 @@ function pageClasses0(){
   }).join('');
   const bulk=st.bulk?bulkPreview():'';
   return '<div class="page-head"><div><span class="eyebrow">Examiner</span><h1>Classes</h1></div><p class="muted">Open a class to upload its class list and papers, and to see results child by child.</p></div>'+
-  '<div class="cls-grid">'+cards+'</div>'+
-  '<div class="stack" style="margin-top:22px"><section class="card stack"><div><h2>Add a class</h2></div>'+
+  '<div class="cls-grid">'+(cards||emptyBox('Nothing assigned to you yet','Ask the school administrator to assign you a class or subject.'))+'</div>'+
+  (ME?'':'<div class="stack" style="margin-top:22px"><section class="card stack"><div><h2>Add a class</h2></div>'+
   '<form class="row" data-form="addclass" autocomplete="off"><label class="f" style="flex:1 1 220px"><span class="hint">Class name</span><input id="f-newclass" type="text" data-bind="st.newClass" value="'+esc(st.newClass)+'" placeholder="For example, Basic 6"></label><button class="btn primary" type="submit" data-act="addclass" style="align-self:end">Add class</button></form></section>'+
   '<section class="card stack"><div><h2>Import class lists from one workbook</h2><p class="muted" style="margin-top:4px">One sheet per class. A sheet named like an existing class fills that class. Other sheets can become new classes.</p></div>'+
-  '<label class="drop" id="drop-bulk"><input id="f-bulk" type="file" accept=".xlsx,.xls,.csv" hidden><b>Choose an .xlsx workbook</b><span>or drop it here</span></label>'+bulk+'</section></div>';
+  '<label class="drop" id="drop-bulk"><input id="f-bulk" type="file" accept=".xlsx,.xls,.csv" hidden><b>Choose an .xlsx workbook</b><span>or drop it here</span></label>'+bulk+'</section></div>');
 }
 function bulkPreview(){
   const b=S.st.bulk;
@@ -1422,7 +1436,8 @@ function pageClass(){
   const pr=classProgress(c),open=c.exams.filter(e=>e.open).length;
   const wr=c.exams.some(e=>e.questions.some(q=>qType(q)!=='obj'&&qMarkable(q)));
   let provN=0;if(wr)c.roster.concat(classNames(c).orphans).forEach(n=>c.exams.forEach(e=>{const x=resFor(c.id,n,e.id);if(x&&x.prov)provN++;}));
-  const tabs=[['register','Register'],['papers','Papers ('+c.exams.length+')']].concat(wr?[['marking','Marking'+(provN?' ('+provN+')':'')]]:[],[['list','Class list ('+c.roster.length+')'],['analysis','Analysis'],['csettings','Settings']]);
+  let tabs=[['register','Register'],['papers','Papers ('+c.exams.length+')']].concat(wr?[['marking','Marking'+(provN?' ('+provN+')':'')]]:[],[['list','Class list ('+c.roster.length+')'],['analysis','Analysis'],['csettings','Settings']]);
+  if(ME){tabs=tabs.filter(t=>['register','marking','analysis'].includes(t[0]));if(!tabs.some(t=>t[0]===st.tab))st.tab='register';}
   const body=st.tab==='marking'?tabMarking(c):st.tab==='papers'?tabPapers(c):st.tab==='list'?tabList(c):st.tab==='analysis'?tabAnalysis(c):st.tab==='csettings'?tabCSettings(c):tabRegister(c);
   return '<div style="'+acStyle(c)+'"><button class="btn small ghost" data-act="spage" data-p="classes" style="margin-bottom:8px">← All classes</button>'+
   '<div class="cls-top"><div class="grow"><span class="eyebrow">Class</span><h1>'+esc(c.name)+'</h1></div><div class="nums"><span><b>'+c.roster.length+'</b><small>children</small></span><span><b>'+c.exams.length+'</b><small>papers ('+open+' open)</small></span><span><b>'+pr.got+'/'+pr.possible+'</b><small>papers written</small></span></div></div>'+
@@ -1432,18 +1447,20 @@ function tabRegister(c){
   return resultsBanner()+tabRegister0(c);
 }
 function tabRegister0(c){
-  const names=classNames(c),all=names.roster.concat(names.orphans);
+  const names=classNames(c);let all=names.roster.concat(names.orphans);
+  if(ME)all=all.filter(n=>c.exams.some(e=>canActR({cid:c.id,name:n,eid:e.id})));
   if(!all.length)return '<section class="card">'+emptyBox('The class list is empty','Add the children first. Results will then line up against their names.','<button class="btn primary" data-act="ctab" data-t="list">Add the class list</button>')+'</section>';
   const rows=all.map(n=>childRow(c,n));
   const pos=c.showRank?positions(c,rows):null;
-  const head='<tr><th>Name</th>'+c.exams.map(e=>'<th class="num" title="'+esc(e.title)+'">'+esc(e.subject)+'<small>/'+fmtN(examTotal(e))+(e.open?'':' closed')+'</small></th>').join('')+'<th class="num">Total</th><th class="num">Average</th>'+(pos?'<th class="num">Position</th>':'')+'</tr>';
+  const hasArms=(c.arms||[]).length>0;
+  const head='<tr><th>Name</th>'+(hasArms?'<th>Arm</th>':'')+c.exams.map(e=>'<th class="num" title="'+esc(e.title)+'">'+esc(e.subject)+'<small>/'+fmtN(examTotal(e))+(e.open?'':' closed')+'</small></th>').join('')+'<th class="num">Total</th><th class="num">Average</th>'+(pos?'<th class="num">Position</th>':'')+'</tr>';
   const body=rows.map(r=>{
     const orphan=names.orphans.includes(r.name);
-    return '<tr><td><button class="namelink" data-act="child" data-n="'+esc(r.name)+'">'+esc(r.name)+'</button>'+(orphan?' <span class="badge warn">not on list</span>':'')+'</td>'+
+    return '<tr><td><button class="namelink" data-act="child" data-n="'+esc(r.name)+'">'+esc(r.name)+'</button>'+(orphan?' <span class="badge warn">not on list</span>':'')+'</td>'+(hasArms?'<td>'+esc(armOf(c,r.name))+'</td>':'')+
       r.cells.map(x=>'<td class="num">'+(x?'<button class="sc '+(x.pass?'ok':'bad')+'" data-act="child" data-n="'+esc(r.name)+'" title="'+x.pct+'%, grade '+x.grade+'">'+fmtN(x.score)+'/'+fmtN(x.total)+(x.prov?'<sup class="pv" title="Provisional: theory marks not confirmed">P</sup>':'')+'</button>':'<span class="sc none">–</span>')+'</td>').join('')+
       '<td class="num mono">'+(r.done?fmtN(r.score)+'/'+fmtN(r.total):'–')+'</td><td class="num mono">'+(r.avg==null?'–':r.avg+'%')+'</td>'+(pos?'<td class="num mono">'+(pos.has(nk(r.name))?ordinal(pos.get(nk(r.name))):'–')+'</td>':'')+'</tr>';
   }).join('');
-  const foot='<tr><td>Class average</td>'+c.exams.map(e=>{
+  const foot='<tr><td>Class average</td>'+(hasArms?'<td></td>':'')+c.exams.map(e=>{
     const got=all.map(n=>resFor(c.id,n,e.id)).filter(Boolean);
     return '<td class="num mono">'+(got.length?Math.round(got.reduce((a,r)=>a+r.pct,0)/got.length*10)/10+'%<br><span class="sm">'+got.length+'/'+all.length+' wrote</span>':'–')+'</td>';
   }).join('')+'<td></td><td></td>'+(pos?'<td></td>':'')+'</tr>';
@@ -1507,8 +1524,16 @@ function tabList(c){
   (st.rimp?rosterPreview(c):'')+'</section>'+
   '<section class="card stack"><div><h2>Edit names</h2><p class="muted" style="margin-top:4px">One name per line. Results stay linked to a name as long as it is spelled the same.</p></div>'+
   '<label class="f">Names ('+c.roster.length+')<textarea id="t-roster" style="min-height:260px" data-bind="st.rosterText">'+esc(st.rosterText)+'</textarea></label>'+
-  '<div class="row"><button class="btn primary" data-act="save-roster">Save names</button></div></section></div>';
+  '<div class="row"><button class="btn primary" data-act="save-roster">Save names</button></div></section>'+(hasTier('growth')&&!ME?armsCard(c):'')+'</div>';
 }
+
+/*@tier growth*/
+function armsCard(c){
+  const arms=c.arms||[];
+  const rows=arms.length?'<div class="scroll" style="max-height:340px"><table><thead><tr><th>Name</th><th>Arm</th></tr></thead><tbody>'+c.roster.map(n=>'<tr><td>'+esc(n)+'</td><td><select data-arm="'+esc(n)+'" aria-label="Arm for '+esc(n)+'"><option value="">–</option>'+arms.map(a=>'<option'+(armOf(c,n)===a?' selected':'')+'>'+esc(a)+'</option>').join('')+'</select></td></tr>').join('')+'</tbody></table></div>':'';
+  return '<section class="card stack"><div><h2>Arms</h2><p class="muted" style="margin-top:4px">Split this class into arms, for example A, B, C, then place each child in one. A form teacher can be given a single arm. Leave this empty if the class is not split.</p></div><label class="f">Arm names<span class="hint">Separated by commas</span><input id="c-arms" type="text" data-cl="arms" value="'+esc(arms.join(', '))+'" placeholder="A, B"></label>'+rows+'</section>';
+}
+/*@end*/
 function rosterPreview(c){
   const r=S.st.rimp;
   if(r.err)return '<div class="err" role="alert">'+esc(r.err)+'</div>';
@@ -1526,11 +1551,11 @@ function rosterPreview(c){
 }
 function tabAnalysis(c){
   const st=S.st;
-  const withRes=c.exams.filter(e=>R.some(r=>r.cid===c.id&&r.eid===e.id));
+  const withRes=c.exams.filter(e=>R.some(r=>r.cid===c.id&&r.eid===e.id&&canActR(r)));
   if(!withRes.length)return '<section class="card">'+emptyBox('Nothing to analyse yet','Once children submit, each question shows how many got it right.')+'</section>';
   const ex=withRes.find(e=>e.id===st.aeid)||withRes[0];
   const latest=new Map();
-  R.filter(r=>r.cid===c.id&&r.eid===ex.id).sort((a,b)=>a.submittedAt-b.submittedAt).forEach(r=>latest.set(nk(r.name),effective(r)));
+  R.filter(r=>r.cid===c.id&&r.eid===ex.id&&canActR(r)).sort((a,b)=>a.submittedAt-b.submittedAt).forEach(r=>latest.set(nk(r.name),effective(r)));
   const rs=[...latest.values()];
   const n=rs.length,avg=Math.round(rs.reduce((a,r)=>a+r.pct,0)/n*10)/10;
   const hi=Math.max(...rs.map(r=>r.pct)),lo=Math.min(...rs.map(r=>r.pct)),pass=Math.round(rs.filter(r=>r.pass).length/n*100);
@@ -1571,7 +1596,7 @@ function pageChild(){
   const trs=c.exams.map((e,i)=>{
     const r=row.cells[i];
     if(!r)return '<tr><td>'+esc(e.subject)+'</td><td class="muted">'+esc(e.title)+'</td><td colspan="6" class="muted">Not written yet</td><td></td></tr>';
-    return '<tr><td><b>'+esc(e.subject)+'</b></td><td class="muted">'+esc(e.title)+'</td><td class="num mono">'+fmtN(r.score)+'/'+fmtN(r.total)+'</td><td class="num mono">'+r.pct+'%</td><td><span class="badge '+(r.pass?'ok':'bad')+'">'+r.grade+'</span></td><td>'+(r.prov?'<span class="prov-badge">Provisional</span>':(r.pass?'Pass':'Below pass mark'))+'</td><td class="sm">'+esc(fmtDate(r.submittedAt))+'</td><td class="num mono">'+fmtClock(r.usedSec)+(r.auto?' *':'')+'</td><td>'+(st.conf==='rr:'+r.id?'<button class="btn danger small" data-act="retake" data-e="'+esc(e.id)+'">Confirm</button>':'<button class="btn small" data-act="retake" data-e="'+esc(e.id)+'">Allow retake</button>')+'</td></tr>';
+    return '<tr><td><b>'+esc(e.subject)+'</b></td><td class="muted">'+esc(e.title)+'</td><td class="num mono">'+fmtN(r.score)+'/'+fmtN(r.total)+'</td><td class="num mono">'+r.pct+'%</td><td><span class="badge '+(r.pass?'ok':'bad')+'">'+r.grade+'</span></td><td>'+(r.prov?'<span class="prov-badge">Provisional</span>':(r.pass?'Pass':'Below pass mark'))+'</td><td class="sm">'+esc(fmtDate(r.submittedAt))+'</td><td class="num mono">'+fmtClock(r.usedSec)+(r.auto?' *':'')+'</td><td>'+(ME?'':st.conf==='rr:'+r.id?'<button class="btn danger small" data-act="retake" data-e="'+esc(e.id)+'">Confirm</button>':'<button class="btn small" data-act="retake" data-e="'+esc(e.id)+'">Allow retake</button>')+'</td></tr>';
   }).join('');
   const answers=c.exams.map((e,i)=>{
     const r=row.cells[i];if(!r)return '';
@@ -1701,7 +1726,7 @@ function mkCard(ex,r,pt){
       return '<div class="row" style="gap:8px;align-items:baseline"><span class="muted sm">'+((q.answers||[]).length>1?'Blank '+(b+1)+':':'Answer:')+'</span><span class="ans-box" style="padding:4px 10px">'+(v?esc(v):'<span class="muted">blank</span>')+'</span>'+
         (res==='full'?'<span class="badge ok">Correct</span>':res==='near'?'<span class="badge warn">Spelling slip, half marks</span>':v?'<span class="badge bad">Not matched</span>':'<span class="badge">Blank</span>')+
         '<span class="muted sm">Accepted: '+esc(alts.join(' / '))+'</span>'+
-        (v&&res!=='full'?'<button class="btn small ghost" data-act="mk-accept" data-r="'+esc(r.id)+'" data-e="'+esc(ex.id)+'" data-q="'+pt.qi+'" data-b="'+b+'">Accept this answer</button>':'')+'</div>';
+        (v&&res!=='full'&&!ME?'<button class="btn small ghost" data-act="mk-accept" data-r="'+esc(r.id)+'" data-e="'+esc(ex.id)+'" data-q="'+pt.qi+'" data-b="'+b+'">Accept this answer</button>':'')+'</div>';
     }).join('')+'</div>';
   }else if(t==='theory'){
     const v=String((r.txt&&r.txt[pt.qi])||'').trim();
@@ -1730,13 +1755,13 @@ function markPanel(c,ex,name,r){
 }
 function tabMarking(c){
   const st=S.st;
-  const exs=c.exams.filter(e=>e.questions.some(q=>qType(q)!=='obj'&&qMarkable(q)));
+  const exs=c.exams.filter(e=>e.questions.some(q=>qType(q)!=='obj'&&qMarkable(q))&&(!ME||c.roster.concat(classNames(c).orphans).some(n=>canActR({cid:c.id,name:n,eid:e.id}))));
   if(!exs.length)return '<section class="card">'+emptyBox('No written questions yet','Papers with fill-in-the-blank or theory questions are checked and marked here.')+'</section>';
   const ex=exs.find(e=>e.id===st.mex)||exs[0];
   const nm=classNames(c),all=nm.roster.concat(nm.orphans);
   const rows=all.map(n=>({n,r:resFor(c.id,n,ex.id)})).filter(x=>x.r);
   const open=rows.reduce((a,x)=>a+provParts(x.r).length,0),sugg=rows.reduce((a,x)=>a+provParts(x.r).filter(p=>p.state==='suggested').length,0);
-  const who='<label class="f" style="min-width:200px">Your name<span class="hint">Kept in the change record</span><input type="text" id="mk-name" data-mkname="1" value="'+esc(markerName())+'" autocomplete="name" placeholder="For example, Mrs Ade"></label>';
+  const who=ME?'<p class="sm" style="align-self:end">Marking as <b>'+esc(ME.name)+'</b></p>':'<label class="f" style="min-width:200px">Your name<span class="hint">Kept in the change record</span><input type="text" id="mk-name" data-mkname="1" value="'+esc(markerName())+'" autocomplete="name" placeholder="For example, Mrs Ade"></label>';
   const sel='<label class="f" style="min-width:240px">Paper<select id="m-exam" data-bind="st.mex">'+exs.map(e=>'<option value="'+esc(e.id)+'"'+(e.id===ex.id?' selected':'')+'>'+esc(e.subject)+'</option>').join('')+'</select></label>';
   const sel2=st.mchild&&rows.find(x=>nk(x.n)===nk(st.mchild));
   if(sel2)return '<div class="stack"><section class="card"><div class="row">'+sel+who+'</div></section>'+markPanel(c,ex,sel2.n,sel2.r)+'</div>';
@@ -1749,6 +1774,83 @@ function tabMarking(c){
     (rows.length?'<div class="row" style="justify-content:space-between"><p class="mono sm">'+rows.length+' written · '+open+' theory mark'+(open===1?'':'s')+' to confirm</p>'+(sugg?'<button class="btn small" data-act="mk-confirm-all" data-e="'+esc(ex.id)+'">Confirm all '+sugg+' suggested marks</button>':'')+'</div>':'')+
     table+'</section></div>';
 }
+
+
+/*@tier growth*/
+const tcSubjects=cid=>{const c=cls(cid),out=[];(c?c.exams:[]).forEach(e=>{if(!out.some(x=>nk(x)===nk(e.subject)))out.push(e.subject);});return out;};
+async function loadTeachers(){
+  const st=S.st,tc=st.tc=st.tc||{list:null,form:null,err:'',busy:false};
+  const h2=ses.get(K_H2);
+  tc.loading=true;tc.err='';
+  try{
+    const r=await srvFetch('/api/teachers',{headers:{'x-admin':h2||''}});
+    const j=await r.json().catch(()=>({}));
+    if(r.ok&&j.ok)tc.list=j.teachers;
+    else if(r.status===403)tc.err='This school’s plan does not include teacher accounts. Ask your ExamDesk provider about the Growth plan.';
+    else if(r.status===401)tc.err='Sign out and sign in again, then open this page.';
+    else tc.err='Teachers could not be loaded ('+r.status+').';
+  }catch(e){tc.err='Could not reach the server.';}
+  tc.loading=false;render();
+}
+function tcSummary(t){
+  const nm=id=>{const c=cls(id);return c?c.name:'(deleted class)';};
+  const f=(t.form||[]).map(x=>nm(x.cid)+(x.arm?' '+x.arm:'')).join(', ');
+  const sb=(t.subj||[]).map(x=>x.subject+' – '+nm(x.cid)).join(', ');
+  return '<td>'+(f?esc(f):'<span class="muted">–</span>')+'</td><td>'+(sb?esc(sb):'<span class="muted">–</span>')+'</td>';
+}
+function pageTeachers(){
+  const st=S.st,tc=st.tc=st.tc||{list:null,form:null,err:'',busy:false};
+  const f=tc.form;
+  const clsOpts=v=>W.classes.map(c=>'<option value="'+esc(c.id)+'"'+(c.id===v?' selected':'')+'>'+esc(c.name)+'</option>').join('');
+  let editor='';
+  if(f){
+    const frow=(x,i)=>{const c=cls(x.cid),arms=c&&c.arms||[];return '<div class="row" style="gap:8px"><select data-tcr="form" data-i="'+i+'" data-k="cid" aria-label="Class">'+clsOpts(x.cid)+'</select><select data-tcr="form" data-i="'+i+'" data-k="arm" aria-label="Arm"><option value="">Whole class</option>'+arms.map(a=>'<option'+(x.arm===a?' selected':'')+'>'+esc(a)+'</option>').join('')+'</select><button class="btn small ghost" data-act="tc-rm-row" data-w="form" data-i="'+i+'">Remove</button></div>';};
+    const srow=(x,i)=>'<div class="row" style="gap:8px"><select data-tcr="subj" data-i="'+i+'" data-k="cid" aria-label="Class">'+clsOpts(x.cid)+'</select><select data-tcr="subj" data-i="'+i+'" data-k="subject" aria-label="Subject">'+tcSubjects(x.cid).map(sj=>'<option'+(nk(x.subject)===nk(sj)?' selected':'')+'>'+esc(sj)+'</option>').join('')+'</select><button class="btn small ghost" data-act="tc-rm-row" data-w="subj" data-i="'+i+'">Remove</button></div>';
+    editor='<section class="card stack"><h2>'+(f.id?'Edit teacher':'Add a teacher')+'</h2>'+
+      '<label class="f">Name<span class="hint">Teachers sign in with this name, so keep it simple and unique. It is also what the change record shows.</span><input id="tc-name" type="text" data-bind="st.tc.form.name" value="'+esc(f.name)+'" autocomplete="off"></label>'+
+      '<label class="f">Passcode<span class="hint">'+(f.id?'Leave empty to keep their current passcode. ':'')+'At least 8 characters. It cannot be the same as your own.</span><input id="tc-pass" type="password" data-bind="st.tc.form.pass" value="'+esc(f.pass||'')+'" autocomplete="new-password"></label>'+
+      '<div class="stack" style="gap:8px"><b>Form teacher of</b><p class="muted sm">Can see every child in the class (or one arm) and change any mark for them.</p>'+f.form.map(frow).join('')+'<div><button class="btn small" data-act="tc-add-row" data-w="form">Add a class</button></div></div>'+
+      '<div class="stack" style="gap:8px"><b>Subject teacher for</b><p class="muted sm">Can see and mark that subject for the whole class, and nothing else.</p>'+f.subj.map(srow).join('')+'<div><button class="btn small" data-act="tc-add-row" data-w="subj">Add a subject</button></div></div>'+
+      '<div class="row"><button class="btn primary" data-act="tc-save"'+(tc.busy?' disabled':'')+'>'+(tc.busy?'Saving…':'Save teacher')+'</button><button class="btn" data-act="tc-cancel">Cancel</button></div></section>';
+  }
+  const list=tc.list===null?(tc.err?'':'<p class="muted">Loading…</p>'):tc.list.length?'<div class="scroll"><table><thead><tr><th>Name</th><th>Form teacher of</th><th>Subject teacher for</th><th></th></tr></thead><tbody>'+tc.list.map(t=>'<tr><td><b>'+esc(t.name)+'</b></td>'+tcSummary(t)+'<td><div class="row" style="gap:6px"><button class="btn small" data-act="tc-edit" data-id="'+esc(t.id)+'">Edit</button>'+(st.conf==='tcd:'+t.id?'<button class="btn danger small" data-act="tc-del" data-id="'+esc(t.id)+'">Yes, remove</button><button class="btn small" data-act="conf-no">Cancel</button>':'<button class="btn small ghost" data-act="tc-del" data-id="'+esc(t.id)+'">Remove</button>')+'</div></td></tr>').join('')+'</tbody></table></div>':emptyBox('No teachers yet','Add a teacher and give them a class or a subject. They sign in on the examiner page with “I am a teacher”.');
+  return '<div class="page-head"><div><span class="eyebrow">Administrator</span><h1>Teachers</h1></div><p class="muted">Give each teacher their own sign-in. A form teacher sees and corrects their whole class or arm; a subject teacher sees only their subject.</p></div>'+
+    '<div class="stack">'+(tc.err?'<div class="err" role="alert">'+esc(tc.err)+'</div>':'')+
+    '<section class="card stack"><div class="row" style="justify-content:space-between"><h2>Teachers</h2>'+(tc.list&&!f?'<button class="btn primary small" data-act="tc-new">Add a teacher</button>':'')+'</div>'+list+'</section>'+editor+'</div>';
+}
+async function tcPut(list){
+  const st=S.st,tc=st.tc,h2=ses.get(K_H2);
+  if(!h2){tc.err='Sign out and sign in again, then try once more.';render();return false;}
+  tc.busy=true;tc.err='';render();
+  let ok=false;
+  try{
+    const r=await srvFetch('/api/teachers',{method:'PUT',headers:{'content-type':'application/json','x-admin':h2},body:JSON.stringify({teachers:list})});
+    const j=await r.json().catch(()=>({}));
+    if(r.ok&&j.ok){tc.list=j.teachers;ok=true;}
+    else if(j.error==='duplicate_name')tc.err='Another teacher already has the name “'+(j.name||'')+'”.';
+    else if(j.error==='same_as_admin')tc.err='“'+(j.name||'')+'” cannot use the administrator’s passcode.';
+    else if(j.error==='passcode_needed')tc.err='“'+(j.name||'')+'” needs a passcode.';
+    else if(j.error==='plan')tc.err='This school’s plan does not include teacher accounts.';
+    else if(/^licence_/.test(j.error||''))tc.err='Changes cannot be saved because of the licence ('+j.error.replace('licence_','')+'). Contact your ExamDesk provider.';
+    else if(r.status===401){tc.err='The administrator passcode was not accepted. Sign out and sign in again.';ses.del(K_H2);}
+    else tc.err='Saving did not go through ('+r.status+').';
+  }catch(e){tc.err='Could not reach the server.';}
+  tc.busy=false;render();return ok;
+}
+async function tcSave(){
+  const st=S.st,tc=st.tc,f=tc.form;
+  const name=cleanName(f.name);
+  if(!name){tc.err='Type the teacher’s name.';render();return;}
+  const pass=f.pass||'';
+  if((!f.id&&pass.length<8)||(pass&&pass.length<8)){tc.err='The passcode needs at least 8 characters.';render();return;}
+  const entry={name,form:f.form.filter(x=>x.cid).map(x=>({cid:x.cid,arm:x.arm||''})),subj:f.subj.filter(x=>x.cid&&x.subject).map(x=>({cid:x.cid,subject:x.subject}))};
+  if(f.id)entry.id=f.id;
+  if(pass)entry.h2=await hash2(pass);
+  const list=tc.list.map(t=>t.id===f.id?entry:{id:t.id,name:t.name,form:t.form,subj:t.subj});
+  if(!f.id)list.push(entry);
+  if(await tcPut(list)){tc.form=null;st.flash=name+' saved.';render();}
+}
+/*@end*/
 
 /* --- publish and backup --- */
 function licCard(){
@@ -1849,9 +1951,10 @@ function classSheets(c){
   const names=classNames(c),all=names.roster.concat(names.orphans);
   const rows=all.map(n=>childRow(c,n));
   const pos=c.showRank?positions(c,rows):null;
-  const head=['No.','Name'].concat(c.exams.map(e=>e.subject+' (out of '+fmtN(examTotal(e))+')'),['Total','Out of','Average %','Grade'],pos?['Position']:[]);
-  const body=rows.map((r,i)=>[i+1,r.name].concat(r.cells.map(x=>x?(x.prov?x.score+' (provisional)':x.score):'Not written'),[r.done?r.score:'',r.done?r.total:'',r.avg==null?'':r.avg,r.avg==null?'':gradeOf(r.avg)],pos?[pos.has(nk(r.name))?pos.get(nk(r.name)):'']:[]));
-  const avgRow=['','Class average'].concat(c.exams.map(e=>{const g=all.map(n=>resFor(c.id,n,e.id)).filter(Boolean);return g.length?Math.round(g.reduce((a,r)=>a+r.pct,0)/g.length*10)/10+'%':'';}));
+  const hasArms=(c.arms||[]).length>0;
+  const head=['No.','Name'].concat(hasArms?['Arm']:[],c.exams.map(e=>e.subject+' (out of '+fmtN(examTotal(e))+')'),['Total','Out of','Average %','Grade'],pos?['Position']:[]);
+  const body=rows.map((r,i)=>[i+1,r.name].concat(hasArms?[armOf(c,r.name)]:[],r.cells.map(x=>x?(x.prov?x.score+' (provisional)':x.score):'Not written'),[r.done?r.score:'',r.done?r.total:'',r.avg==null?'':r.avg,r.avg==null?'':gradeOf(r.avg)],pos?[pos.has(nk(r.name))?pos.get(nk(r.name)):'']:[]));
+  const avgRow=['','Class average'].concat(hasArms?['']:[],c.exams.map(e=>{const g=all.map(n=>resFor(c.id,n,e.id)).filter(Boolean);return g.length?Math.round(g.reduce((a,r)=>a+r.pct,0)/g.length*10)/10+'%':'';}));
   const det=[['Name','Subject','Test','Score','Out of','Percent','Grade','Result','Status','Written','Time used']];
   all.forEach(n=>c.exams.forEach(e=>{const r=resFor(c.id,n,e.id);if(r)det.push([n,e.subject,e.title,r.score,r.total,r.pct,r.grade,r.prov?'Provisional':(r.pass?'Pass':'Below pass mark'),r.prov?'Provisional':'Final',fmtDate(r.submittedAt),fmtClock(r.usedSec)]);}));
   return [{name:'Broadsheet',rows:[head].concat(body,[[],avgRow]),widths:[5,28].concat(c.exams.map(()=>16),[8,8,11,7,9])},{name:'All results',rows:det,widths:[28,22,22,8,8,9,7,16,12,20,10]}];
@@ -1950,17 +2053,33 @@ async function act(a,el){
       if(W.adminHash==='srv'){
         try{
           const h2=await hash2(st.pass);
-          const r=await srvFetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({h2})});
+          const r=await srvFetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(st.asTeacher&&hasTier('growth')?{h2,user:st.tname||''}:{h2})});
           const j=await r.json().catch(()=>({}));
-          if(j&&j.ok){st.authed=true;st.err='';st.pass='';ses.set(K_AUTH,h2);ses.set(K_H2,h2);setTimeout(()=>pullResults(),50);}
+          if(j&&j.ok){
+            if(j.role==='teacher'){ME=j.teacher;ses.set(K_USER,ME);st.page='classes';}else{ME=null;ses.del(K_USER);}
+            st.authed=true;st.err='';st.pass='';ses.set(K_AUTH,h2);ses.set(K_H2,h2);setTimeout(()=>{pullResults();pullMarks();},50);}
           else if(r.status===429)st.err='Too many wrong attempts. Wait a few minutes, then try again.';
-          else st.err='That passcode is not correct.';
+          else st.err=st.asTeacher?'That name or passcode is not correct.':'That passcode is not correct.';
         }catch(e){st.err='Could not reach the server. Signing in needs the internet.';}
       }else if(W.adminHash&&await hash(st.pass)===W.adminHash){st.authed=true;st.err='';ses.set(K_AUTH,W.adminHash);try{ses.set(K_H2,await hash2(st.pass));}catch(e){}st.pass='';}
       else st.err='That passcode is not correct.';
       render();break;}
-    case 'logout':st.authed=false;st.flash='';ses.del(K_AUTH);go('home');break;
-    case 'spage':st.page=el.dataset.p;st.flash='';st.err='';st.fallback=null;st.conf='';window.scrollTo(0,0);render();break;
+    case 'tc-new':st.tc.form={id:'',name:'',pass:'',form:[],subj:[]};st.tc.err='';render();break;
+    case 'tc-edit':{const t=st.tc.list.find(x=>x.id===el.dataset.id);if(t){st.tc.form={id:t.id,name:t.name,pass:'',form:JSON.parse(JSON.stringify(t.form||[])),subj:JSON.parse(JSON.stringify(t.subj||[]))};st.tc.err='';}render();break;}
+    case 'tc-cancel':st.tc.form=null;st.tc.err='';render();break;
+    case 'tc-add-row':{
+      const w=el.dataset.w,cid=(W.classes[0]||{}).id||'';
+      st.tc.form[w].push(w==='form'?{cid,arm:''}:{cid,subject:tcSubjects(cid)[0]||''});render();break;}
+    case 'tc-rm-row':st.tc.form[el.dataset.w].splice(+el.dataset.i,1);render();break;
+    case 'tc-save':await tcSave();break;
+    case 'tc-del':{
+      const id=el.dataset.id;
+      if(st.conf==='tcd:'+id){st.conf='';const ok=await tcPut(st.tc.list.filter(t=>t.id!==id).map(t=>({id:t.id,name:t.name,form:t.form,subj:t.subj})));if(ok){st.flash='Teacher removed. They can no longer sign in.';render();}}
+      else{st.conf='tcd:'+id;render();}
+      break;}
+    case 'login-mode':st.asTeacher=!st.asTeacher;st.err='';render();break;
+    case 'logout':st.authed=false;st.flash='';st.asTeacher=false;ses.del(K_AUTH);ses.del(K_USER);ses.del(K_H2);ME=null;go('home');break;
+    case 'spage':if(el.dataset.p==='teachers'&&hasTier('growth')){loadTeachers();}st.page=el.dataset.p;st.flash='';st.err='';st.fallback=null;st.conf='';window.scrollTo(0,0);render();break;
     case 'open-class':st.cid=el.dataset.id;st.page='class';st.tab='register';st.flash='';st.err='';st.imp=null;st.rimp=null;st.rosterText=null;st.conf='';st.fallback=null;window.scrollTo(0,0);render();break;
     case 'ctab':st.tab=el.dataset.t;st.flash='';st.err='';st.conf='';st.fallback=null;st.rosterText=null;st.rimp=null;st.imp=null;render();break;
     case 'child':st.child=el.dataset.n;st.page='child';st.conf='';st.flash='';st.fallback=null;window.scrollTo(0,0);render();break;
@@ -2196,9 +2315,27 @@ $app.addEventListener('change',async e=>{
     if(t.type==='checkbox'||k==='theoryMode')render();
     return;
   }
+  if(t.dataset.arm!==undefined){
+    const c=cls(st.cid);if(!c)return;
+    c.armOf=c.armOf||{};
+    if(t.value)c.armOf[t.dataset.arm]=t.value;else delete c.armOf[t.dataset.arm];
+    saveW();return;
+  }
+  if(t.dataset.tcr&&st.tc&&st.tc.form){
+    const row=st.tc.form[t.dataset.tcr][+t.dataset.i];if(!row)return;
+    row[t.dataset.k]=t.value;
+    if(t.dataset.k==='cid'){row.arm='';row.subject=t.dataset.tcr==='subj'?(tcSubjects(t.value)[0]||''):'';}
+    render();return;
+  }
   if(t.dataset.cl){
     const c=cls(st.cid);if(!c)return;
     const k=t.dataset.cl;
+    if(k==='arms'){
+      const list=[];t.value.split(',').map(cleanName).filter(Boolean).forEach(a=>{if(!list.some(x=>nk(x)===nk(a)))list.push(a);});
+      c.arms=list.slice(0,12);
+      Object.keys(c.armOf||{}).forEach(n=>{if(!c.arms.includes(c.armOf[n]))delete c.armOf[n];});
+      saveW();render();return;
+    }
     if(k==='showRank')c[k]=t.checked;
     else if(k==='name'){const v=cleanName(t.value);if(!v)return;c.name=v;}
     else c[k]=cleanName(t.value);

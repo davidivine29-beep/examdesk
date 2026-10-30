@@ -40,6 +40,9 @@ Papers can mix multiple choice, fill-in-the-blank and theory questions. In the e
 - **Theory:** a `Rubric: sunlight | carbon dioxide / CO2 | chlorophyll (2)` line lists the keywords.
 - Theory scores stay **Provisional** until a teacher confirms them in the **Marking** tab. Every change is kept with the marker\u2019s name and the time.
 
+## Teacher accounts (Growth and above)
+Open **Teachers** as the administrator and add each teacher with a name and passcode. Give them **Form teacher of** a class (or one arm) and/or **Subject teacher for** a subject in a class. Teachers sign in from the examiner page with **I am a teacher**. To split a class into arms, use the **Arms** card on the class list tab.
+
 ## Results
 When a child submits, the paper is marked on their device and the result is saved there first. It is then sent
 to the school server in the background, and the child sees either "saved to the school server" or

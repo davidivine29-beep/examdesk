@@ -47,25 +47,25 @@ export function makeHandler(store, opts = {}) {
 
   // Wrong guesses slow down, and after MAX_FAILS inside the window the passcode is locked for LOCK_MS.
   const MAX_FAILS = opts.maxFails ?? 10, WINDOW_MS = opts.windowMs ?? 10 * 60 * 1000, LOCK_MS = opts.lockMs ?? 5 * 60 * 1000;
-  async function checkAdmin(h2) {
-    const auth = await store.get('auth');
+  async function checkWith(auth, lockKey, h2) {
     if (!auth) return { ok: false, none: true };
     const now = Date.now();
     let lock = {};
-    try { lock = JSON.parse((await store.get('lock')) || '{}'); } catch (e) { lock = {}; }
+    try { lock = JSON.parse((await store.get(lockKey)) || '{}'); } catch (e) { lock = {}; }
     if (lock.until && lock.until > now) return { ok: false, locked: true };
     if (typeof h2 === 'string' && HEX64.test(h2) && same(await sha(h2), auth)) {
-      if (lock.fails) await store.set('lock', '{}');
+      if (lock.fails) await store.set(lockKey, '{}');
       return { ok: true };
     }
     const fresh = lock.first && now - lock.first < WINDOW_MS;
     const fails = (fresh ? lock.fails || 0 : 0) + 1;
     const next = { fails, first: fresh ? lock.first : now };
     if (fails >= MAX_FAILS) { next.until = now + LOCK_MS; next.fails = 0; next.first = 0; }
-    await store.set('lock', JSON.stringify(next));
+    await store.set(lockKey, JSON.stringify(next));
     await sleep(failDelay);
     return { ok: false };
   }
+  async function checkAdmin(h2) { return checkWith(await store.get('auth'), 'lock', h2); }
   const vendorKey = typeof opts.vendorKey === 'string' ? opts.vendorKey : '';
   async function getLicence() {
     try { return JSON.parse((await store.get('licence')) || 'null'); } catch (e) { return null; }
@@ -76,6 +76,40 @@ export function makeHandler(store, opts = {}) {
     return same(await sha('xd-vendor:' + k), await sha('xd-vendor:' + vendorKey));
   }
   const bad = (c) => json({ ok: false, locked: !!c.locked }, c.locked ? 429 : 401);
+
+  // ---- Growth plan: teacher accounts. A teacher signs in with name + passcode and only sees what they are assigned to.
+  const RANK = { core: 0, growth: 1, campus: 2, max: 3 };
+  const growthOk = async () => { const l = await getLicence(); return !l || (RANK[l.plan] ?? 0) >= 1; };
+  async function getTeachers() { try { return JSON.parse((await store.get('teachers')) || '[]'); } catch (e) { return []; } }
+  const pubTeacher = (t) => ({ id: t.id, name: t.name, form: t.form || [], subj: t.subj || [] });
+  const armOfS = (c, name) => { const m = c.armOf || {}, k = nk(name); for (const n of Object.keys(m)) if (nk(n) === k) return m[n] || ''; return ''; };
+  function canAct(t, setup, r) {
+    const c = ((setup && setup.classes) || []).find((x) => x.id === r.cid);
+    if (!c) return false;
+    const ex = (c.exams || []).find((e) => e.id === r.eid), arm = armOfS(c, r.name);
+    if ((t.form || []).some((f) => f.cid === c.id && (!f.arm || f.arm === arm))) return true;
+    return !!ex && (t.subj || []).some((s) => s.cid === c.id && nk(s.subject) === nk(ex.subject));
+  }
+  // Who is asking? No x-user header means the administrator.
+  async function principal(req) {
+    const h2 = req.headers.get('x-admin') || '', uid = req.headers.get('x-user') || '';
+    if (!uid) { const c = await checkAdmin(h2); return c.ok ? { ok: true, role: 'admin' } : c; }
+    if (!(await growthOk())) return { ok: false };
+    const t = (await getTeachers()).find((x) => x.id === uid);
+    const c = await checkWith(t ? t.auth : 'none', 'lock:' + (t ? t.id : 'unknown'), h2);
+    return c.ok && t ? { ok: true, role: 'teacher', teacher: t } : { ok: false, locked: c.locked };
+  }
+  // saving anything is blocked when the licence is off, suspended or expired (reading never is)
+  async function licBlock() {
+    const lic = await getLicence();
+    if (!lic) return null;
+    const raw = await store.get('setup');
+    const v = licView(lic, raw ? JSON.parse(raw) : null, Date.now());
+    if (v.status === 'deactivated') return json({ ok: false, error: 'licence_off', licence: v }, 402);
+    if (v.status === 'suspended') return json({ ok: false, error: 'licence_suspended', licence: v }, 402);
+    if (v.status === 'expired') return json({ ok: false, error: 'licence_expired', licence: v }, 402);
+    return null;
+  }
 
   return async function handle(req) {
     const path = new URL(req.url).pathname.replace(/\/+$/, '');
@@ -119,9 +153,15 @@ export function makeHandler(store, opts = {}) {
       }
 
       if (path === '/api/login' && req.method === 'POST') {
-        const { h2 } = await req.json();
+        const { h2, user } = await req.json();
+        if (typeof user === 'string' && user.trim()) {
+          if (!(await growthOk())) { await sleep(failDelay); return json({ ok: false }, 401); }
+          const t = (await getTeachers()).find((x) => nk(x.name) === nk(user));
+          const c = await checkWith(t ? t.auth : 'none', 'lock:' + (t ? t.id : 'unknown'), h2);
+          return c.ok && t ? json({ ok: true, role: 'teacher', teacher: pubTeacher(t) }) : c.locked ? bad(c) : json({ ok: false }, 401);
+        }
         const c = await checkAdmin(h2);
-        return c.ok ? json({ ok: true }) : c.locked ? bad(c) : json({ ok: false, none: !!c.none }, 401);
+        return c.ok ? json({ ok: true, role: 'admin' }) : c.locked ? bad(c) : json({ ok: false, none: !!c.none }, 401);
       }
 
       if (path === '/api/passcode' && req.method === 'POST') {
@@ -208,15 +248,20 @@ export function makeHandler(store, opts = {}) {
       }
 
       if (path === '/api/results' && req.method === 'GET') {
-        const c = await checkAdmin(req.headers.get('x-admin') || '');
+        const c = await principal(req);
         if (!c.ok) return bad(c);
         const since = parseInt(new URL(req.url).searchParams.get('since') || '0', 10) || 0;
         const keys = (await store.list('r:')).filter((k) => parseInt(k.slice(2, 15), 10) > since);
+        const setup = c.role === 'teacher' ? JSON.parse((await store.get('setup')) || 'null') : null;
         const results = [];
         let upTo = since;
         for (const k of keys.slice(0, 500)) {
           const v = await store.get(k);
-          if (v) { results.push(JSON.parse(v)); upTo = Math.max(upTo, parseInt(k.slice(2, 15), 10)); }
+          if (!v) continue;
+          const r = JSON.parse(v);
+          upTo = Math.max(upTo, parseInt(k.slice(2, 15), 10));
+          if (c.role === 'teacher' && !canAct(c.teacher, setup, r)) continue;
+          results.push(r);
         }
         return json({ ok: true, results, upTo, more: keys.length > 500 });
       }
@@ -228,22 +273,18 @@ export function makeHandler(store, opts = {}) {
         return json({ ok: true });
       }
 
-      // ---- marks: teacher marks on written answers, with their change record. Examiner only; saving is licence-gated like the setup.
+      // ---- marks: teacher marks on written answers, with their change record.
+      // The administrator may change any mark; a teacher only on results they are assigned to, and only under their own name.
       if (path === '/api/marks' && req.method === 'POST') {
-        const c = await checkAdmin(req.headers.get('x-admin') || '');
+        const c = await principal(req);
         if (!c.ok) return bad(c);
-        const lic = await getLicence();
-        if (lic) {
-          const raw0 = await store.get('setup');
-          const v = licView(lic, raw0 ? JSON.parse(raw0) : null, Date.now());
-          if (v.status === 'deactivated') return json({ ok: false, error: 'licence_off', licence: v }, 402);
-          if (v.status === 'suspended') return json({ ok: false, error: 'licence_suspended', licence: v }, 402);
-          if (v.status === 'expired') return json({ ok: false, error: 'licence_expired', licence: v }, 402);
-        }
+        const blocked = await licBlock();
+        if (blocked) return blocked;
         const text = await req.text();
         if (text.length > 1024 * 1024) return json({ ok: false, error: 'too_large' }, 413);
         const body = JSON.parse(text);
         const list = Array.isArray(body.marks) ? body.marks.slice(0, 100) : [];
+        const setup = c.role === 'teacher' ? JSON.parse((await store.get('setup')) || 'null') : null;
         const accepted = [], rejected = [];
         const num = (x) => typeof x === 'number' && Number.isFinite(x);
         const hkey = (h) => h.at + '|' + h.m + '|' + h.from + '|' + h.by;
@@ -251,13 +292,23 @@ export function makeHandler(store, opts = {}) {
           const rid = it && it.rid, qi = it && it.qi, rec = it && it.rec;
           const key = rid + '|' + qi;
           if (!ID.test(String(rid)) || !Number.isInteger(qi) || qi < 0 || qi > 999 || !rec || !num(rec.m) || rec.m < 0 || rec.m > 1000 || !num(rec.at) || typeof rec.by !== 'string') { rejected.push({ key, reason: 'bad' }); continue; }
-          if (!(await store.get('i:' + rid))) { rejected.push({ key, reason: 'unknown_result' }); continue; }
+          const iat = await store.get('i:' + rid);
+          if (!iat) { rejected.push({ key, reason: 'unknown_result' }); continue; }
+          if (c.role === 'teacher') {
+            const rv = await store.get('r:' + pad(parseInt(iat, 10)) + ':' + rid);
+            if (!rv || !canAct(c.teacher, setup, JSON.parse(rv))) { rejected.push({ key, reason: 'not_allowed' }); continue; }
+          }
           const hist = (Array.isArray(rec.h) ? rec.h : []).filter((h) => h && num(h.m) && num(h.from) && num(h.at) && typeof h.by === 'string').slice(0, 60)
             .map((h) => ({ m: h.m, from: h.from, by: h.by.slice(0, 60), at: h.at }));
           const mine = { m: rec.m, by: rec.by.slice(0, 60), at: rec.at, h: hist };
           const ptr = await store.get('mp:' + rid + ':' + qi);
           let cur = null;
           if (ptr) { const ov = await store.get('m:' + pad(parseInt(ptr, 10)) + ':' + rid + ':' + qi); if (ov) cur = JSON.parse(ov).rec; }
+          if (c.role === 'teacher') {
+            // new change-record entries must carry this teacher's own name
+            const have = new Set(cur ? cur.h.map(hkey) : []);
+            if (mine.h.some((h) => !have.has(hkey(h)) && h.by !== c.teacher.name) || (!have.size && mine.by !== c.teacher.name)) { rejected.push({ key, reason: 'wrong_name' }); continue; }
+          }
           let out = mine;
           if (cur) {
             const win = cur.at > mine.at ? cur : mine;
@@ -276,17 +327,78 @@ export function makeHandler(store, opts = {}) {
       }
 
       if (path === '/api/marks' && req.method === 'GET') {
-        const c = await checkAdmin(req.headers.get('x-admin') || '');
+        const c = await principal(req);
         if (!c.ok) return bad(c);
         const since = parseInt(new URL(req.url).searchParams.get('since') || '0', 10) || 0;
         const keys = (await store.list('m:')).filter((k) => parseInt(k.slice(2, 15), 10) > since);
+        const setup = c.role === 'teacher' ? JSON.parse((await store.get('setup')) || 'null') : null;
         const marks = [];
         let upTo = since;
         for (const k of keys.slice(0, 500)) {
           const v = await store.get(k);
-          if (v) { marks.push(JSON.parse(v)); upTo = Math.max(upTo, parseInt(k.slice(2, 15), 10)); }
+          if (!v) continue;
+          const m = JSON.parse(v);
+          upTo = Math.max(upTo, parseInt(k.slice(2, 15), 10));
+          if (c.role === 'teacher') {
+            const iat = await store.get('i:' + m.rid);
+            const rv = iat && (await store.get('r:' + pad(parseInt(iat, 10)) + ':' + m.rid));
+            if (!rv || !canAct(c.teacher, setup, JSON.parse(rv))) continue;
+          }
+          marks.push(m);
         }
         return json({ ok: true, marks, upTo, more: keys.length > 500 });
+      }
+
+      // ---- teacher accounts (Growth plan and above). The administrator manages them.
+      if (path === '/api/me' && req.method === 'GET') {
+        const c = await principal(req);
+        if (!c.ok) return bad(c);
+        return json({ ok: true, role: c.role, teacher: c.role === 'teacher' ? pubTeacher(c.teacher) : null });
+      }
+
+      if (path === '/api/teachers' && req.method === 'GET') {
+        const c = await checkAdmin(req.headers.get('x-admin') || '');
+        if (!c.ok || req.headers.get('x-user')) return bad(c.ok ? {} : c);
+        if (!(await growthOk())) return json({ ok: false, error: 'plan' }, 403);
+        return json({ ok: true, teachers: (await getTeachers()).map(pubTeacher) });
+      }
+
+      if (path === '/api/teachers' && req.method === 'PUT') {
+        const c = await checkAdmin(req.headers.get('x-admin') || '');
+        if (!c.ok || req.headers.get('x-user')) return bad(c.ok ? {} : c);
+        if (!(await growthOk())) return json({ ok: false, error: 'plan' }, 403);
+        const blocked = await licBlock();
+        if (blocked) return blocked;
+        const text = await req.text();
+        if (text.length > 512 * 1024) return json({ ok: false, error: 'too_large' }, 413);
+        const body = JSON.parse(text);
+        const inList = Array.isArray(body.teachers) ? body.teachers : null;
+        if (!inList || inList.length > 300) return json({ ok: false, error: 'bad' }, 400);
+        const old = await getTeachers();
+        const out = [], names = new Set();
+        const str = (v, n) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, n) : '');
+        for (const t of inList) {
+          const name = str(t && t.name, 60);
+          if (!name) return json({ ok: false, error: 'bad_name' }, 400);
+          if (names.has(nk(name))) return json({ ok: false, error: 'duplicate_name', name }, 400);
+          names.add(nk(name));
+          const prev = old.find((x) => x.id === (t && t.id));
+          let auth = prev ? prev.auth : '';
+          if (t.h2 !== undefined && t.h2 !== '') {
+            if (typeof t.h2 !== 'string' || !HEX64.test(t.h2)) return json({ ok: false, error: 'bad_passcode', name }, 400);
+            auth = await sha(t.h2);
+          }
+          if (!auth) return json({ ok: false, error: 'passcode_needed', name }, 400);
+          if (auth === (await store.get('auth'))) return json({ ok: false, error: 'same_as_admin', name }, 400);
+          const id = prev ? prev.id : 'tc' + [...crypto.getRandomValues(new Uint8Array(8))].map((x) => x.toString(16).padStart(2, '0')).join('');
+          const form = (Array.isArray(t.form) ? t.form : []).slice(0, 100).map((f) => ({ cid: str(f && f.cid, 64), arm: str(f && f.arm, 40) })).filter((f) => f.cid);
+          const subj = (Array.isArray(t.subj) ? t.subj : []).slice(0, 300).map((x) => ({ cid: str(x && x.cid, 64), subject: str(x && x.subject, 80) })).filter((x) => x.cid && x.subject);
+          out.push({ id, name, auth, form, subj });
+        }
+        await store.set('teachers', JSON.stringify(out));
+        // a teacher who was removed can no longer sign in; their lock records go too
+        for (const o of old) if (!out.some((x) => x.id === o.id)) await store.delete('lock:' + o.id);
+        return json({ ok: true, teachers: out.map(pubTeacher) });
       }
 
       return json({ ok: false, error: 'not_found' }, 404);

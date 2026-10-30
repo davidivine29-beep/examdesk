@@ -1,3 +1,10 @@
+## Teacher accounts and arms (Growth and above)
+- The administrator adds teachers (Teachers page) with a name and passcode. Each teacher is a **form teacher** of a class or a single arm, a **subject teacher** for a subject in a class, or both, in any number of classes.
+- Teachers sign in with "I am a teacher" and only see the classes, arms and subjects assigned to them. The server enforces it: results and marks outside their scope are never sent, and marks outside it are refused.
+- A form teacher can change any mark for their children; a subject teacher marks only their subject. Every change is recorded under the teacher\u2019s own name, which cannot be set to someone else\u2019s.
+- Classes can be split into arms (A, B, ...) with each child placed in one; the register and class export show the arm.
+- Passcodes cannot match the administrator\u2019s; wrong guesses lock only that teacher; removing a teacher ends their access. Core licences are refused by the server.
+
 ## Written questions and marking (stage 2, in every tier)
 - Three question types: multiple choice, fill in the blank (auto-marked) and theory (keyword rubric).
 - Marks: a section\u2019s marks are shared equally between its questions, or a question can state its own (`[3 marks]`, parts `4a.` `4b.`). Children see the total marks.
