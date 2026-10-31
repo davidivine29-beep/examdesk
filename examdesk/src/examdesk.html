@@ -936,7 +936,7 @@ let NEWER=null;   // a newer setup on the server while this device holds unsaved
 const switchedOff=()=>SA&&SRVS.on&&!!SRVS.lic&&SRVS.lic.status==='deactivated';
 /* On a school server the page only learns class names. A class access code opens one class (its names and open papers) on this device. */
 const K_UNL='xd2_unl';
-let UNL=(()=>{const u=store.get(K_UNL)||{},now=Date.now(),o={};Object.keys(u).forEach(k=>{if(u[k]&&u[k].cls&&u[k].at>now-6*3600*1000)o[k]=u[k];});return o;})();
+let UNL=(()=>{const u=store.get(K_UNL)||{},now=Date.now(),o={};Object.keys(u).forEach(k=>{if(u[k]&&u[k].cls&&u[k].at>now-(u[k].dev?12:6)*3600*1000)o[k]=u[k];});return o;})();
 const saveUnl=()=>store.set(K_UNL,UNL);
 const tokFor=cid=>(UNL[cid]&&UNL[cid].tok)||'';
 function applyUnlocks(){W.classes=W.classes.map(c=>(c.locked||c.fromUnl)&&UNL[c.id]?Object.assign(clone(UNL[c.id].cls),{fromUnl:1}):c);}
@@ -960,6 +960,26 @@ async function unlockClass(){
   }catch(e){S.busyU=false;return fail('Could not reach the server. Opening a class needs the internet.');}
   S.busyU=false;render();
 }
+// The invigilator signs in once and opens every class on this device, so children never type a code here.
+async function setupDevice(){
+  const st=S.st;if(st.busy)return;
+  const list=W.classes.filter(c=>c.code&&!c.locked&&!c.fromUnl);
+  if(!list.length){st.err='There is nothing to set up yet. Add a class first and save to the server.';render();return;}
+  if(dirty){st.err='Save to the server first, so the codes on the server match.';render();return;}
+  st.busy=true;st.err='';render();
+  let n=0,bad=0;
+  for(const c of list){
+    try{
+      const r=await srvFetch('/api/unlock',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({cid:c.id,code:c.code})});
+      const j=await r.json().catch(()=>null);
+      if(j&&j.ok){UNL[c.id]={tok:j.tok,cls:j.cls,stamp:j.stamp||0,code:c.code,at:Date.now(),dev:true};n++;}else bad++;
+    }catch(e){bad++;}
+  }
+  saveUnl();st.busy=false;
+  st.flash=n?n+' class'+(n===1?'':'es')+' ready on this device for 12 hours. Press Lock when you finish and children can just pick their names.'+(bad?' '+bad+' could not be opened. Save to the server and try again.':''):'No class could be opened. Save to the server and try again.';
+  render();
+}
+const devReady=()=>Object.keys(UNL).filter(k=>UNL[k]&&UNL[k].dev);
 // when the school saves a new setup, classes already opened on this device are fetched again with the code that opened them
 async function refreshUnlocks(stamp){
   let changed=false;
@@ -968,7 +988,7 @@ async function refreshUnlocks(stamp){
     try{
       const r=await srvFetch('/api/unlock',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({cid,code:u.code})});
       const j=await r.json().catch(()=>null);
-      if(j&&j.ok){UNL[cid]={tok:j.tok,cls:j.cls,stamp:j.stamp||0,code:u.code,at:u.at};changed=true;}
+      if(j&&j.ok){UNL[cid]={tok:j.tok,cls:j.cls,stamp:j.stamp||0,code:u.code,at:u.at,dev:u.dev};changed=true;}
       else if(r.status===401){delete UNL[cid];changed=true;}
     }catch(e){}
   }
@@ -1470,6 +1490,7 @@ function pageClasses0(){
   const bulk=st.bulk?bulkPreview():'';
   return '<div class="page-head"><div><span class="eyebrow">Examiner</span><h1>Classes</h1></div><p class="muted">Open a class to upload its class list and papers, and to see results child by child.</p></div>'+
   '<div class="cls-grid">'+(cards||emptyBox('Nothing assigned to you yet','Ask the school administrator to assign you a class or subject.'))+'</div>'+
+  ((ME||!(SA&&SRVS.on))?'':'<section class="card stack" style="margin-top:22px"><div><h2>Candidate device</h2><p class="muted" style="margin-top:4px">Open all classes on <b>this</b> device so children can pick their names without a code. Do this on each computer or tablet used for the test, then press Lock.'+(devReady().length?' <b>Ready now</b> for '+devReady().length+' class'+(devReady().length===1?'':'es')+'.':'')+'</p></div><div class="row"><button class="btn primary" data-act="dev-setup"'+(st.busy?' disabled':'')+'>'+(devReady().length?'Refresh this device':'Set up this device for candidates')+'</button>'+(devReady().length?'<button class="btn" data-act="dev-clear">Remove from this device</button>':'')+'</div></section>')+
   (ME?'':'<div class="stack" style="margin-top:22px"><section class="card stack"><div><h2>Add a class</h2></div>'+
   '<form class="row" data-form="addclass" autocomplete="off"><label class="f" style="flex:1 1 220px"><span class="hint">Class name</span><input id="f-newclass" type="text" data-bind="st.newClass" value="'+esc(st.newClass)+'" placeholder="For example, Basic 6"></label><button class="btn primary" type="submit" data-act="addclass" style="align-self:end">Add class</button></form></section>'+
   '<section class="card stack"><div><h2>Import class lists from one workbook</h2><p class="muted" style="margin-top:4px">One sheet per class. A sheet named like an existing class fills that class. Other sheets can become new classes.</p></div>'+
@@ -2269,6 +2290,8 @@ async function act(a,el){
       else st.err='That passcode is not correct.';
       render();break;}
     case 'take-server':{if(!NEWER)break;const sv=NEWER;adoptServer(sv);st.note='';if(!sv.pub&&!sv.part&&ensureCodes())saveW();st.flash='Loaded the version saved on the server.';render();break;}
+    case 'dev-setup':await setupDevice();break;
+    case 'dev-clear':{Object.keys(UNL).forEach(k=>{if(UNL[k]&&UNL[k].dev)delete UNL[k];});saveUnl();st.flash='This device no longer opens classes by itself.';render();break;}
     case 'gen-run':await genRun();break;
     case 'gen-replace':await genRun(el.dataset.id);break;
     case 'bank-new':{const b=bankSt(),g=b.gf;b.edit={id:'new',subject:g.subject,level:g.level,topic:g.topic,text:'The organ that pumps blood around the body is the\na. lungs\nb. kidney\nc. heart [CORRECT]\nd. liver',err:''};b.err='';b.msg='';render();break;}

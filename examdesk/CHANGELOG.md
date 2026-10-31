@@ -1,3 +1,6 @@
+## Candidate device set-up
+- On the Classes page the administrator can press **Set up this device for candidates**. Every class opens on that device for 12 hours, so children pick their names with no code. Press Lock afterwards. Other devices (children's own phones) still ask for the class code.
+
 ## Question bank and AI questions (Growth and above)
 - A shared **Question bank** page (administrator and teachers). Questions are saved one per record with subject, class, topic and kind. Write one by hand, save the questions of any paper to the bank, or pick bank questions to build a new paper (administrator).
 - **Generate with AI** makes up to 20 draft questions (multiple choice, fill-in-the-blank or theory with a keyword rubric) for a subject, level and topic, optionally from notes the teacher pastes. Drafts are never used until a teacher accepts them; each shows the answer and a one-line reason. The teacher checks the answers.
