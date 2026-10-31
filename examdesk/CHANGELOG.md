@@ -1,3 +1,10 @@
+## Question bank and AI questions (Growth and above)
+- A shared **Question bank** page (administrator and teachers). Questions are saved one per record with subject, class, topic and kind. Write one by hand, save the questions of any paper to the bank, or pick bank questions to build a new paper (administrator).
+- **Generate with AI** makes up to 20 draft questions (multiple choice, fill-in-the-blank or theory with a keyword rubric) for a subject, level and topic, optionally from notes the teacher pastes. Drafts are never used until a teacher accepts them; each shows the answer and a one-line reason. The teacher checks the answers.
+- Allowance per term: Growth 100, Campus 500, Campus Max 1,000 generations. Unused term allowance does not carry over. Extra packs bought from you never expire and are used after the term allowance. Two replacements per set of drafts are free; further ones cost a generation. A failed or unusable AI reply is never charged.
+- Each school uses its own Anthropic key, set as the environment variable `XD_AI_KEY` on that school's site (with the model fixed to Sonnet 5.5). Without it the button is off and the rest of the bank still works.
+- Vendor console: shows generations left and whether the AI key is set, adds +100/+200/+500 packs, and a "start a new term" box that resets the term allowance.
+
 ## Private class lists and administrator reset
 - On a school server the public page now learns class names only. A child opens a class by typing its **class access code**; only then do that class's names and open papers reach the device. Codes are made automatically (6 characters) and can be changed or renewed with **New code** in the class Settings. After a renewal the old code no longer opens the class, but results written under it still arrive.
 - Results must carry the class token; guessing codes or tokens is counted per network address and locked for 5 minutes after 40 wrong tries.

@@ -40,6 +40,9 @@ Papers can mix multiple choice, fill-in-the-blank and theory questions. In the e
 - **Theory:** a `Rubric: sunlight | carbon dioxide / CO2 | chlorophyll (2)` line lists the keywords.
 - Theory scores stay **Provisional** until a teacher confirms them in the **Marking** tab. Every change is kept with the marker\u2019s name and the time.
 
+## Question bank and AI questions (Growth and above)
+Open **Question bank** to keep questions for reuse and to make AI drafts. Set `XD_AI_KEY` (the school's own Anthropic API key) in the site's environment variables and redeploy to switch AI on. Allowances are 100 (Growth), 500 (Campus) and 1,000 (Campus Max) generations per term; in the vendor console use **Start a new term** when the school renews and **Add AI generations** when they buy a pack. A generation can take 10 to 25 seconds; if the host cuts the request off sooner, teachers see a "took too long" message, are not charged, and can ask for fewer questions (5 or 6) at a time.
+
 ## Class access codes and passcode reset
 Every class has an access code (Settings tab of the class). Children choose their class and type the code before their names appear, so the class lists are not public. Give the code to the invigilator on the day; press **New code** to change it, then **Save to the server**.
 If a school forgets the administrator passcode, open the vendor console, pick the school, enter your vendor key and press **Reset administrator passcode**. Read the temporary passcode to the school; they sign in with it and change it under Publish and backup.

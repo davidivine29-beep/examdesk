@@ -97,7 +97,7 @@ async function call(s,method,body,key,path){
 async function load(s){
   live[s.id]={loading:true};draw();
   const r=await call(s,'GET');
-  if(r.status===200&&r.j&&r.j.ok)live[s.id]={lic:r.j.licence};
+  if(r.status===200&&r.j&&r.j.ok)live[s.id]={lic:r.j.licence,ai:!!r.j.ai};
   else if(r.status===404||(r.status===200&&!r.j))live[s.id]={err:'This address is not an ExamDesk site with licences (is it the new version?)'};
   else live[s.id]={err:'Could not reach this site'};
   draw();
@@ -154,6 +154,8 @@ function detail(){
   d.innerHTML='<h2>'+esc(s.name)+'<span class="badge b-'+k+'">'+l+'</span></h2><div class="mut" style="font-size:12.5px">'+esc(s.url)+(live[s.id]&&live[s.id].err?' · '+esc(live[s.id].err):'')+'</div>'+
   '<div class="row"><div><label>Plan</label><select id="plan">'+Object.keys(PLAN).map(p=>'<option value="'+p+'"'+(p===def.plan?' selected':'')+'>'+PLAN[p][0]+' ('+PLAN[p][1]+')</option>').join('')+'</select></div><div><label>Student cap</label><input id="cap" type="number" min="1" value="'+def.cap+'"></div></div>'+
   '<div class="row"><div><label>Paid until</label><input id="paid" type="date" value="'+iso(def.paidUntil)+'"></div><div><label>&nbsp;</label><button class="btn" id="plus" type="button">+ 1 term (about 3 months)</button></div></div>'+
+  '<div class="row"><div><label>Add AI generations (bought packs)</label><select id="addg"><option value="0">None</option><option value="100">+100</option><option value="200">+200</option><option value="500">+500</option></select></div><div><label>&nbsp;</label><label class="row tight" style="font-weight:400"><input type="checkbox" id="nt"> Start a new term (resets the term’s AI allowance)</label></div></div>'+
+  (has&&L.gen?'<div class="mut" style="font-size:12.5px;margin:-4px 0 8px">AI questions: <b>'+L.gen.left+'</b> left ('+(L.gen.allow-Math.min(L.gen.used,L.gen.allow))+' of '+L.gen.allow+' this term, plus '+L.gen.extra+' bought). AI key on the site: <b>'+((live[s.id]||{}).ai?'set':'not set')+'</b>'+((live[s.id]||{}).ai?'':' (add XD_AI_KEY in Netlify, then redeploy)')+'</div>':'')+
   '<div class="row"><div><label>Grace days after due</label><input id="grace" type="number" min="0" max="90" value="'+(def.graceDays==null?14:def.graceDays)+'"></div><div><label>Over the cap</label><select id="enf"><option value="block"'+(def.enforce!=='warn'?' selected':'')+'>Block adding children</option><option value="warn"'+(def.enforce==='warn'?' selected':'')+'>Warn only</option></select></div></div>'+
   '<label>Your vendor key</label><input id="key" type="password" autocomplete="off" value="'+esc(keys[s.id]||sess[s.id]||'')+'"><label class="row tight" style="font-weight:400;margin-top:6px"><input type="checkbox" id="rem"'+(keys[s.id]?' checked':'')+'> Remember on this PC</label>'+
   '<div class="row tight" style="margin-top:10px"><button class="btn p" id="save">Save licence</button><button class="btn" id="re">Refresh</button></div>'+
@@ -167,7 +169,7 @@ function detail(){
   '<div class="row tight" style="margin-top:14px"><button class="btn d sm" id="rm">Remove from my list</button></div>';
   const q=id=>$(id);
   q('plan').onchange=()=>{q('cap').value=PLAN[q('plan').value][1];};
-  q('plus').onclick=()=>{const b=Math.max(new Date(q('paid').value+'T12:00:00').getTime()||0,Date.now());q('paid').value=iso(b+91*DAY);};
+  q('plus').onclick=()=>{q('nt').checked=true;const b=Math.max(new Date(q('paid').value+'T12:00:00').getTime()||0,Date.now());q('paid').value=iso(b+91*DAY);};
   q('notes').oninput=()=>{s.notes=q('notes').value;save();};
   q('re').onclick=()=>load(s);
   q('rm').onclick=()=>{if(!confirm('Remove '+s.name+' from your list? Its licence on the site is not changed.'))return;schools=schools.filter(x=>x.id!==s.id);delete keys[s.id];store.set('xdc:keys',keys);save();sel=schools.length?schools[0].id:null;draw();};
@@ -178,7 +180,8 @@ function detail(){
     const paid=new Date(q('paid').value+'T23:59:59').getTime();
     if(!Number.isFinite(paid)){setNote(s,'err','Choose a paid-until date.');return;}
     const body={plan:q('plan').value,cap:parseInt(q('cap').value,10),paidUntil:paid,graceDays:parseInt(q('grace').value,10),enforce:q('enf').value,school:s.name};
-    await put(s,body,key,'Saved: '+PLAN[body.plan][0]+', cap '+body.cap+', paid until '+fd(paid));
+    const ag=parseInt(q('addg').value,10)||0,nt=q('nt').checked;if(ag)body.addGens=ag;if(nt)body.newTerm=true;
+    await put(s,body,key,'Saved: '+PLAN[body.plan][0]+', cap '+body.cap+', paid until '+fd(paid)+(ag?', +'+ag+' AI generations':'')+(nt?', new term':''));
   };
   if(q('tmpdone'))q('tmpdone').onclick=()=>{delete reveal[s.id];draw();};
   if(q('resetadm'))q('resetadm').onclick=async()=>{
@@ -214,7 +217,7 @@ async function put(s,body,key,what){
   setNote(s,'ok','Saving…');
   const r=await call(s,'PUT',body,key);
   if(r.status===200&&r.j&&r.j.ok){
-    live[s.id]={lic:r.j.licence};
+    live[s.id]={lic:r.j.licence,ai:!!r.j.ai};
     s.log=(s.log||[]).concat([{t:Date.now(),m:what}]).slice(-100);save();
     note[s.id]={t:'ok',m:'Done. The site now reports: '+(({active:'Active',grace:'Overdue (grace)',expired:'Expired',suspended:'Suspended',deactivated:'Switched off'})[r.j.licence.status]||r.j.licence.status)+'.'};
     draw();toast(what);return;

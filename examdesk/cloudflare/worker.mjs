@@ -10,7 +10,7 @@ export default {
       if (!env.DB) {
         return new Response(JSON.stringify({ ok: false, error: 'no_database' }), { status: 500, headers: { 'content-type': 'application/json' } });
       }
-      return makeHandler(d1Store(env.DB), { vendorKey: env.XD_VENDOR_KEY || '' })(request);
+      return makeHandler(d1Store(env.DB), { vendorKey: env.XD_VENDOR_KEY || '', aiKey: env.XD_AI_KEY || '' })(request);
     }
     return env.ASSETS.fetch(request);
   },

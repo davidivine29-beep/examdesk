@@ -931,7 +931,7 @@ async function hash2(s){
 const TIER='__TIER__',TIER_RANK={core:0,growth:1,campus:2,max:3};
 const hasTier=t=>(TIER_RANK[TIER]!==undefined?TIER_RANK[TIER]:3)>=TIER_RANK[t];
 const PLAN_NAME={core:'Core',growth:'Growth',campus:'Campus',max:'Campus Max'};
-const SRVS={on:false,hasAdmin:false,checked:false,lic:null};
+const SRVS={on:false,hasAdmin:false,checked:false,lic:null,ai:false};
 const switchedOff=()=>SA&&SRVS.on&&!!SRVS.lic&&SRVS.lic.status==='deactivated';
 /* On a school server the page only learns class names. A class access code opens one class (its names and open papers) on this device. */
 const K_UNL='xd2_unl';
@@ -991,7 +991,7 @@ async function syncServer(){
     const r=await srvFetch('/api/setup',{headers:authHdr()});
     const j=r.ok&&/json/.test(r.headers.get('content-type')||'')?await r.json():null;
     if(!j||j.kind!=='xd-srv'){SRVS.on=false;return;}
-    const was=SRVS.on;SRVS.on=true;SRVS.hasAdmin=!!j.hasAdmin;const oldSt=SRVS.lic&&SRVS.lic.status;SRVS.lic=j.licence||null;SRVS.checked=true;if(oldSt!==(SRVS.lic&&SRVS.lic.status)&&!S.ses&&(S.view==='home'||S.view==='staff'))setTimeout(render,0);store.set(K_HASSRV,1);
+    const was=SRVS.on;SRVS.on=true;SRVS.ai=!!j.ai;SRVS.hasAdmin=!!j.hasAdmin;const oldSt=SRVS.lic&&SRVS.lic.status;SRVS.lic=j.licence||null;SRVS.checked=true;if(oldSt!==(SRVS.lic&&SRVS.lic.status)&&!S.ses&&(S.view==='home'||S.view==='staff'))setTimeout(render,0);store.set(K_HASSRV,1);
     if(j.authFailed&&S.st.authed){
       S.st.authed=false;ses.del(K_AUTH);ses.del(K_H2);ses.del(K_USER);ME=null;S.st.err='Your passcode is no longer valid. Sign in again.';
       if(S.view==='staff')render();
@@ -1436,14 +1436,15 @@ function viewLogin(){
 function staffBar(){
   const st=S.st;
   const cur=k=>k==='classes'?(st.page==='classes'||st.page==='class'||st.page==='child'):st.page===k;
-  const nav=(ME?[['classes','Classes']]:[['classes','Classes']].concat(hasTier('growth')&&SA&&SRVS.on?[['teachers','Teachers']]:[],[['setup','Publish and backup']])).map(([k,l])=>'<button class="navlink" data-act="spage" data-p="'+k+'" aria-current="'+(cur(k)?'page':'false')+'">'+l+'</button>').join('');
+  const bk=hasTier('growth')&&SA&&SRVS.on?[['bank','Question bank']]:[];
+  const nav=(ME?[['classes','Classes']].concat(bk):[['classes','Classes']].concat(bk,hasTier('growth')&&SA&&SRVS.on?[['teachers','Teachers']]:[],[['setup','Publish and backup']])).map(([k,l])=>'<button class="navlink" data-act="spage" data-p="'+k+'" aria-current="'+(cur(k)?'page':'false')+'">'+l+'</button>').join('');
   return '<header class="top"><div class="brand">'+markSvg+'<div><b>ExamDesk</b><small>'+esc(W.school||'Examiner')+'</small></div></div><nav class="snav">'+nav+'</nav>'+
   '<div class="top-actions"><span id="dirty-badge" class="badge warn"'+(dirty?'':' hidden')+'>'+(SA?'Not in page file yet':'Unpublished changes')+'</span><button class="btn small" data-act="home">Candidate screen</button><button class="btn small" data-act="logout">'+(ME?'Sign out':'Lock')+'</button></div></header>'+(ME?'<div class="note" style="margin:0 0 14px">Signed in as <b>'+esc(ME.name)+'</b>. You see only the classes and subjects assigned to you.</div>':'');
 }
 function viewStaff(){
   const st=S.st;
   if(!st.authed)return viewLogin();
-  const body=st.page==='class'?pageClass():st.page==='child'?pageChild():(st.page==='setup'&&!ME)?pageSetup():(st.page==='teachers'&&!ME&&hasTier('growth'))?pageTeachers():pageClasses();
+  const body=st.page==='class'?pageClass():st.page==='child'?pageChild():(st.page==='setup'&&!ME)?pageSetup():(st.page==='teachers'&&!ME&&hasTier('growth'))?pageTeachers():(st.page==='bank'&&hasTier('growth'))?pageBank():pageClasses();
   return staffBar()+
     (st.flash?'<div class="okbox" style="margin-bottom:14px" role="status">'+esc(st.flash)+'</div>':'')+
     (st.err?'<div class="err" style="margin-bottom:14px" role="alert">'+esc(st.err)+'</div>':'')+
@@ -1542,7 +1543,7 @@ function tabPapers(c){
       '<div class="stack" style="gap:8px">'+chk('shuffleQ','Shuffle question order inside each section')+chk('shuffleO','Shuffle option order for each child')+chk('showResult','Show the score to the child after submitting')+chk('showReview','Show the answer review after submitting')+'</div>'+
       (ex.questions.some(q=>qType(q)==='theory')?'<label class="f" style="margin-top:12px">Theory answers<select data-ex="'+esc(ex.id)+'" data-k="theoryMode"><option value="online"'+(ex.theoryMode!=='paper'?' selected':'')+'>Typed by the child on the computer</option><option value="paper"'+(ex.theoryMode==='paper'?' selected':'')+'>Written on paper, marks entered by the teacher</option></select></label>':'')+
       '<ol class="qlist" style="margin-top:14px">'+ex.questions.map((q,i)=>qPreview(q,i)).join('')+'</ol>'+
-      '<div class="row" style="margin-top:14px">'+(st.conf==='del:'+ex.id?'<button class="btn danger small" data-act="del-exam" data-id="'+esc(ex.id)+'">Yes, delete this paper</button><button class="btn small" data-act="conf-no">Cancel</button>':'<button class="btn danger small" data-act="del-exam" data-id="'+esc(ex.id)+'">Delete paper</button>')+'</div></details></article>';
+      '<div class="row" style="margin-top:14px">'+(hasTier('growth')&&SA&&SRVS.on&&!ME?'<button class="btn small" data-act="bank-save-exam" data-id="'+esc(ex.id)+'">Save to the question bank</button>':'')+(st.conf==='del:'+ex.id?'<button class="btn danger small" data-act="del-exam" data-id="'+esc(ex.id)+'">Yes, delete this paper</button><button class="btn small" data-act="conf-no">Cancel</button>':'<button class="btn danger small" data-act="del-exam" data-id="'+esc(ex.id)+'">Delete paper</button>')+'</div></details></article>';
   }).join(''):'<section class="card">'+emptyBox('No papers in '+c.name+' yet','Upload the CBT .docx or paste the text below. New papers stay closed until you open them.')+'</section>';
   const imp=st.imp?impPreview(c):'';
   return '<div class="stack">'+list+
@@ -1854,6 +1855,149 @@ function tcSummary(t){
   const sb=(t.subj||[]).map(x=>x.subject+' – '+nm(x.cid)).join(', ');
   return '<td>'+(f?esc(f):'<span class="muted">–</span>')+'</td><td>'+(sb?esc(sb):'<span class="muted">–</span>')+'</td>';
 }
+/* ---------- Question bank (Growth and above): shared questions and AI drafts ---------- */
+function qToText(q,n){
+  const t=qType(q),mk=q.marks!=null?' ['+q.marks+(q.marks===1?' mark':' marks')+']':'';
+  let o=(n?n+'. ':'')+q.text+mk;
+  if(t==='obj')o+=(q.options||[]).map((x,k)=>'\n'+String.fromCharCode(97+k)+'. '+x.t+(x.c?' [CORRECT]':'')).join('');
+  else if(t==='fib')(q.answers||[]).forEach((a,k)=>{o+='\n'+((q.answers||[]).length>1?'Answer '+(k+1):'Answer')+': '+a.join(' | ');});
+  else o+='\nRubric: '+(q.rubric||[]).map(r=>r.kw.join(' / ')+(r.m!=null?' ('+r.m+')':'')).join(' | ');
+  return o;
+}
+function parseOneQ(txt){
+  const r=parseText('# T\n## S\n### Section\n1. '+String(txt||'').trim().replace(/^\d{1,3}[\.\)]\s+/,''));
+  const qs=r.exams.length?r.exams[0].questions:[];
+  if(!qs.length)return {err:'Give the question its options (a. b. c. d., with [CORRECT] after the right one), or an Answer: line for a fill-in question, or a Rubric: line for a theory question.'};
+  if(qs.length>1)return {err:'Put one question in the box. Use the paper builder to combine questions.'};
+  const q=qs[0],t=qType(q);
+  if(t==='obj'&&(q.options.length<2||!q.options.some(o=>o.c)))return {err:'A multiple-choice question needs at least two options and one marked [CORRECT].'};
+  const out={type:t,text:q.text,marks:q.marks!=null?q.marks:1};
+  if(t==='obj')out.options=q.options.map(o=>({t:o.t,c:!!o.c}));
+  if(t==='fib')out.answers=q.answers||[];
+  if(t==='theory')out.rubric=q.rubric||[];
+  return {q:out};
+}
+const bankOn=()=>hasTier('growth')&&SA&&SRVS.on;
+function bankSt(){const st=S.st;return st.bank=st.bank||{items:null,loading:false,busy:false,err:'',msg:'',gf:{subject:'',level:'',topic:'',type:'obj',count:10,difficulty:'mixed',notes:''},edit:null,fSubject:'',fType:'',fText:'',pick:{},build:{cid:'',title:'',subject:''}};}
+async function bankReq(path,opt){
+  const o=Object.assign({},opt||{});o.headers=Object.assign({'content-type':'application/json'},authHdr(),o.headers||{});
+  const r=await srvFetch(path,o),j=await r.json().catch(()=>null);return {r,j};
+}
+async function loadBank(){
+  const b=bankSt();if(b.loading)return;
+  b.loading=true;b.err='';
+  try{
+    const {r,j}=await bankReq('/api/bank');
+    if(r.ok&&j&&j.ok)b.items=j.items;
+    else if(r.status===403)b.err='This school’s plan does not include the question bank.';
+    else if(r.status===401||r.status===429)b.err='Sign in again to open the question bank.';
+    else b.err='The question bank could not be loaded.';
+  }catch(e){b.err='Could not reach the server.';}
+  b.loading=false;if(S.st.page==='bank')render();
+}
+function genErr(status,j){
+  const e=j&&j.error;
+  return e==='no_gens'?'No generations are left for this term. Ask your ExamDesk provider for a pack of 100 more.':
+    e==='ai_off'?'AI is not switched on for this school yet. Ask your ExamDesk provider.':
+    e==='ai_key'?'The AI key set up for this school was not accepted. Tell your ExamDesk provider. You were not charged.':
+    e==='ai_busy'?'The AI service is busy. Wait a minute and try again. You were not charged.':
+    e==='ai_timeout'?'That took too long. Try fewer questions at a time, for example 5 or 6. You were not charged.':
+    e==='ai_down'?'The AI service could not be reached. You were not charged.':
+    e==='bad_output'?'The AI did not return usable questions. Try again. You were not charged.':
+    e==='bad_subject'?'Type the subject first.':e==='bad_count'?'Ask for between 1 and 20 questions.':
+    e==='plan'?'This school’s plan does not include AI questions.':e==='no_licence'?'This site has no licence yet, so AI questions are off. Ask your ExamDesk provider.':
+    e==='licence_suspended'||e==='licence_off'||e==='licence_expired'?'This school’s ExamDesk licence is not active, so new questions cannot be made. Ask your ExamDesk provider.':
+    status===401?'Sign in again, then try again.':status===429?'Too many wrong attempts. Wait a few minutes.':'That did not work ('+(status||'no connection')+'). You were not charged.';
+}
+async function genRun(replaceId){
+  const b=bankSt(),g=b.gf;if(b.busy)return;
+  if(!replaceId&&!String(g.subject).trim()){b.err='Type the subject first.';render();return;}
+  b.busy=replaceId||true;b.err='';b.msg='';render();
+  try{
+    const body=replaceId?{replaceId}:{subject:g.subject,level:g.level,topic:g.topic,type:g.type,count:Math.max(1,Math.min(20,parseInt(g.count,10)||10)),difficulty:g.difficulty,notes:g.notes};
+    const {r,j}=await bankReq('/api/generate',{method:'POST',body:JSON.stringify(body)});
+    if(r.ok&&j&&j.ok){
+      if(replaceId)b.items=(b.items||[]).filter(x=>x.id!==replaceId);
+      b.items=j.items.concat(b.items||[]);
+      if(SRVS.lic)SRVS.lic.gen=j.gen;
+      b.msg=replaceId?(j.charged?'Replaced. That used one generation, because the two free replacements for this set are used up.':'Replaced for free. '+j.replaceLeft+' free replacement'+(j.replaceLeft===1?'':'s')+' left for this set.'):j.items.length+' draft question'+(j.items.length===1?'':'s')+' added below. Check every answer before you accept it.';
+    }else b.err=genErr(r.status,j);
+  }catch(e){b.err='Could not reach the server. You were not charged.';}
+  b.busy=false;render();
+}
+async function bankSave(list,del){
+  const b=bankSt();
+  const {r,j}=await bankReq('/api/bank',{method:'PUT',body:JSON.stringify({items:list||[],del:del||[]})});
+  if(!(r.ok&&j&&j.ok)){b.err=r.status===402?'This school’s licence is not active, so the bank cannot be changed.':r.status===401?'Sign in again, then try again.':'That did not save ('+r.status+').';return false;}
+  const map=new Map((b.items||[]).map(x=>[x.id,x]));
+  (j.items||[]).forEach(x=>map.set(x.id,x));
+  (del||[]).forEach(id=>map.delete(id));
+  b.items=[...map.values()].sort((x,y)=>y.at-x.at);
+  return true;
+}
+function bqHtml(q){
+  const t=qType(q),mk=' <span class="muted sm">['+fmtN(q.marks!=null?q.marks:1)+((q.marks!=null?q.marks:1)===1?' mark':' marks')+']</span>';
+  const tag=t==='fib'?'<span class="badge">Fill in</span> ':t==='theory'?'<span class="badge">Theory</span> ':'';
+  let tail='';
+  if(t==='obj')tail=(q.options||[]).map((o,k)=>'<span class="o'+(o.c?' c':'')+'">'+String.fromCharCode(97+k)+'. '+esc(o.t)+(o.c?'  ✓':'')+'</span>').join('');
+  else if(t==='fib')tail=(q.answers||[]).map((a,k)=>'<span class="o c">'+((q.answers||[]).length>1?'Blank '+(k+1)+': ':'Answer: ')+esc(a.join(' / '))+'</span>').join('');
+  else tail=(q.rubric||[]).length?'<span class="o c">Keywords: '+esc(q.rubric.map(x=>x.kw.join('/')+(x.m!=null?' ('+x.m+')':'')).join(' · '))+'</span>':'<span class="o">No keywords, so this one is marked by hand.</span>';
+  return tag+esc(q.text)+mk+tail+(q.expl?'<span class="o">Why: '+esc(q.expl)+'</span>':'');
+}
+function bankEditor(b){
+  const e=b.edit;
+  return '<div class="card stack" style="border:2px solid var(--accent,#16324F)"><h3>'+(e.id==='new'?'Write a question':'Edit this question')+'</h3>'+
+  '<div class="setgrid"><label class="f">Subject<input type="text" data-bind="st.bank.edit.subject" value="'+esc(e.subject)+'"></label>'+
+  '<label class="f">Class or level<input type="text" data-bind="st.bank.edit.level" value="'+esc(e.level)+'"></label>'+
+  '<label class="f">Topic<input type="text" data-bind="st.bank.edit.topic" value="'+esc(e.topic)+'"></label></div>'+
+  '<label class="f">Question<span class="hint">Multiple choice: the question, then options a. b. c. d. with [CORRECT] after the right one. Fill in: use ____ for the gap and add a line Answer: word | other word. Theory: add a line Rubric: keyword | another / alternative (2). Marks go at the end, like [3 marks].</span><textarea rows="8" data-bind="st.bank.edit.text">'+esc(e.text)+'</textarea></label>'+
+  (e.err?'<div class="err" role="alert">'+esc(e.err)+'</div>':'')+
+  '<div class="row"><button class="btn primary" data-act="bank-edit-save">'+(e.id==='new'?'Add to the bank':'Save changes')+'</button><button class="btn" data-act="bank-edit-cancel">Cancel</button></div></div>';
+}
+function pageBank(){
+  const st=S.st,b=bankSt(),g=b.gf,L=SRVS.lic,gen=L&&L.gen;
+  if(b.items===null&&!b.loading&&!b.err)setTimeout(loadBank,0);
+  const items=b.items||[],drafts=items.filter(x=>x.status==='draft'),ok=items.filter(x=>x.status==='ok');
+  const subjects=[...new Set(items.map(x=>x.subject))].sort();
+  const dl='<datalist id="dl-subj">'+subjects.map(x=>'<option value="'+esc(x)+'">').join('')+'</datalist><datalist id="dl-lvl">'+W.classes.map(c=>'<option value="'+esc(c.name)+'">').join('')+'</datalist>';
+  const allow=gen?'<span class="badge '+(gen.left>0?'ok':'bad')+'">'+gen.left+' AI generation'+(gen.left===1?'':'s')+' left</span>'+(gen.extra?' <span class="muted sm">('+gen.extra+' bought extra, never expire; the rest renew each term)</span>':' <span class="muted sm">(renew each term)</span>'):'';
+  const aiOff=!SRVS.ai?'<div class="note">AI questions are not switched on for this school yet. Ask your ExamDesk provider. You can still write questions into the bank yourself.</div>':'';
+  const busy=!!b.busy;
+  const form='<section class="card stack"><div class="row" style="justify-content:space-between;align-items:center"><div><h2>Make questions with AI</h2><p class="muted" style="margin-top:4px">Each press of Generate uses one generation and gives up to 20 drafts. Drafts are never used until you check and accept them.</p></div>'+allow+'</div>'+aiOff+
+  '<div class="setgrid"><label class="f">Subject<input type="text" list="dl-subj" data-bind="st.bank.gf.subject" value="'+esc(g.subject)+'" placeholder="Basic Science"></label>'+
+  '<label class="f">Class or level<input type="text" list="dl-lvl" data-bind="st.bank.gf.level" value="'+esc(g.level)+'" placeholder="Basic 6"></label>'+
+  '<label class="f">Topic<input type="text" data-bind="st.bank.gf.topic" value="'+esc(g.topic)+'" placeholder="The human heart"></label>'+
+  '<label class="f">Kind<select data-bind="st.bank.gf.type"><option value="obj"'+(g.type==='obj'?' selected':'')+'>Multiple choice</option><option value="fib"'+(g.type==='fib'?' selected':'')+'>Fill in the blank</option><option value="theory"'+(g.type==='theory'?' selected':'')+'>Theory</option></select></label>'+
+  '<label class="f">How many (1 to 20)<input type="number" min="1" max="20" data-bind="st.bank.gf.count" value="'+esc(g.count)+'"></label>'+
+  '<label class="f">Difficulty<select data-bind="st.bank.gf.difficulty">'+['easy','medium','hard','mixed'].map(d=>'<option value="'+d+'"'+(g.difficulty===d?' selected':'')+'>'+d[0].toUpperCase()+d.slice(1)+'</option>').join('')+'</select></label></div>'+
+  '<label class="f">Your notes (optional)<span class="hint">Paste a few lines from the scheme of work or the textbook so the questions follow what you taught.</span><textarea rows="3" data-bind="st.bank.gf.notes">'+esc(g.notes)+'</textarea></label>'+
+  '<div class="row"><button class="btn primary" data-act="gen-run"'+(busy||!SRVS.ai||(gen&&gen.left<=0)?' disabled':'')+'>'+(busy===true?'Writing questions…':'Generate with AI')+'</button><button class="btn" data-act="bank-new">Write a question myself</button></div>'+dl+'</section>';
+  const msg=(b.err?'<div class="err" role="alert">'+esc(b.err)+'</div>':'')+(b.msg?'<div class="note">'+esc(b.msg)+'</div>':'');
+  // drafts, grouped by set
+  const sets=[];drafts.forEach(x=>{let s2=sets.find(y=>y.k===(x.batch||x.id));if(!s2){s2={k:x.batch||x.id,list:[]};sets.push(s2);}s2.list.push(x);});
+  const draftHtml=sets.length?sets.map(set=>{
+    const f=set.list[0];
+    return '<section class="card stack"><div class="row" style="justify-content:space-between;align-items:center"><div><h3>Drafts: '+esc(f.subject)+(f.topic?' · '+esc(f.topic):'')+'</h3><p class="muted sm">'+(f.by==='ai'?'Written by AI for '+esc(f.byName)+'. Not checked yet. Two replacements per set are free.':'Waiting for your check.')+'</p></div><button class="btn small primary" data-act="bank-accept-batch" data-k="'+esc(set.k)+'">Accept all '+set.list.length+'</button></div>'+
+    '<ol class="qlist" style="max-height:none">'+set.list.map(x=>b.edit&&b.edit.id===x.id?'<li>'+bankEditor(b)+'</li>':'<li>'+bqHtml(x.q)+'<div class="row" style="margin-top:8px;gap:8px"><button class="btn small primary" data-act="bank-accept" data-id="'+esc(x.id)+'">Accept</button><button class="btn small" data-act="bank-edit" data-id="'+esc(x.id)+'">Edit</button>'+(x.by==='ai'&&x.batch?'<button class="btn small" data-act="gen-replace" data-id="'+esc(x.id)+'"'+(busy||!SRVS.ai?' disabled':'')+'>'+(b.busy===x.id?'Replacing…':'Replace with a new one')+'</button>':'')+'<button class="btn small danger" data-act="bank-del" data-id="'+esc(x.id)+'">Delete</button></div></li>').join('')+'</ol></section>';
+  }).join(''):'';
+  // accepted bank
+  const fs=b.fSubject,ft=b.fType,fx=nk(b.fText);
+  const shown=ok.filter(x=>(!fs||x.subject===fs)&&(!ft||x.q.type===ft)&&(!fx||nk(x.q.text+' '+x.topic).includes(fx)));
+  const picked=ok.filter(x=>b.pick[x.id]);
+  const bankHtml='<section class="card stack"><div class="row" style="justify-content:space-between;align-items:center"><h2>The bank <span class="muted sm">('+ok.length+' question'+(ok.length===1?'':'s')+')</span></h2></div>'+
+    '<div class="row" style="gap:8px"><select data-bind="st.bank.fSubject" aria-label="Subject"><option value="">All subjects</option>'+subjects.map(x=>'<option value="'+esc(x)+'"'+(fs===x?' selected':'')+'>'+esc(x)+'</option>').join('')+'</select>'+
+    '<select data-bind="st.bank.fType" aria-label="Kind"><option value="">All kinds</option><option value="obj"'+(ft==='obj'?' selected':'')+'>Multiple choice</option><option value="fib"'+(ft==='fib'?' selected':'')+'>Fill in</option><option value="theory"'+(ft==='theory'?' selected':'')+'>Theory</option></select>'+
+    '<input type="search" id="b-find" placeholder="Search questions or topics" data-bind="st.bank.fText" value="'+esc(b.fText)+'" style="flex:1 1 180px"></div>'+
+    (shown.length?'<ol class="qlist" style="max-height:none">'+shown.slice(0,200).map(x=>b.edit&&b.edit.id===x.id?'<li>'+bankEditor(b)+'</li>':'<li><label class="check"><input type="checkbox" data-bpick="'+esc(x.id)+'"'+(b.pick[x.id]?' checked':'')+'><span>'+bqHtml(x.q)+'</span></label><p class="muted sm" style="margin:6px 0 0">'+esc(x.subject)+(x.level?' · '+esc(x.level):'')+(x.topic?' · '+esc(x.topic):'')+' · '+(x.by==='ai'?'AI draft checked by '+esc(x.byName):x.by==='paper'?'from a paper':'written by '+esc(x.byName))+'</p><div class="row" style="margin-top:6px;gap:8px"><button class="btn small" data-act="bank-edit" data-id="'+esc(x.id)+'">Edit</button>'+(st.conf==='bd:'+x.id?'<button class="btn small danger" data-act="bank-del-yes" data-id="'+esc(x.id)+'">Yes, delete</button><button class="btn small" data-act="conf-no">Cancel</button>':'<button class="btn small danger" data-act="bank-del" data-id="'+esc(x.id)+'">Delete</button>')+'</div></li>').join('')+'</ol>'+(shown.length>200?'<p class="muted sm">Showing the first 200. Narrow the search to see the rest.</p>':''):emptyBox(ok.length?'Nothing matches':'The bank is empty','Accept drafts above, write a question, or save a paper’s questions with “Save to the bank” on the Papers tab.'))+'</section>';
+  const build=(!ME&&picked.length)?(()=>{
+    const bd=b.build;if(!W.classes.some(c=>c.id===bd.cid))bd.cid=(W.classes[0]||{}).id||'';
+    return '<section class="card stack" style="border:2px solid var(--accent,#16324F)"><h2>Build a paper from '+picked.length+' picked question'+(picked.length===1?'':'s')+'</h2><div class="setgrid"><label class="f">Class<select data-bind="st.bank.build.cid">'+W.classes.map(c=>'<option value="'+esc(c.id)+'"'+(c.id===bd.cid?' selected':'')+'>'+esc(c.name)+'</option>').join('')+'</select></label>'+
+    '<label class="f">Subject name<input type="text" data-bind="st.bank.build.subject" value="'+esc(bd.subject||picked[0].subject)+'"></label>'+
+    '<label class="f">Test title<input type="text" data-bind="st.bank.build.title" value="'+esc(bd.title)+'" placeholder="First Term Test"></label></div>'+
+    '<p class="muted sm">Questions keep the marks shown. The paper is added closed, so you can check it under Papers before opening it.</p><div class="row"><button class="btn primary" data-act="bank-build">Create the paper</button><button class="btn" data-act="bank-unpick">Clear picks</button></div></section>';
+  })():(ME&&picked.length?'<div class="note">Papers are built by the administrator. Ask them to pick these questions from the bank.</div>':'');
+  return '<div class="stack">'+form+msg+draftHtml+(b.edit&&b.edit.id==='new'?bankEditor(b):'')+(b.loading&&b.items===null?'<p class="muted">Loading the bank…</p>':bankHtml)+build+'</div>';
+}
 function pageTeachers(){
   const st=S.st,tc=st.tc=st.tc||{list:null,form:null,err:'',busy:false};
   const f=tc.form;
@@ -2123,6 +2267,52 @@ async function act(a,el){
       }else if(W.adminHash&&await hash(st.pass)===W.adminHash){st.authed=true;st.err='';ses.set(K_AUTH,W.adminHash);try{ses.set(K_H2,await hash2(st.pass));}catch(e){}st.pass='';}
       else st.err='That passcode is not correct.';
       render();break;}
+    case 'gen-run':await genRun();break;
+    case 'gen-replace':await genRun(el.dataset.id);break;
+    case 'bank-new':{const b=bankSt(),g=b.gf;b.edit={id:'new',subject:g.subject,level:g.level,topic:g.topic,text:'The organ that pumps blood around the body is the\na. lungs\nb. kidney\nc. heart [CORRECT]\nd. liver',err:''};b.err='';b.msg='';render();break;}
+    case 'bank-edit':{const b=bankSt(),it=(b.items||[]).find(x=>x.id===el.dataset.id);if(!it)break;b.edit={id:it.id,subject:it.subject,level:it.level||'',topic:it.topic||'',text:qToText(it.q,0),err:'',keep:it};b.err='';b.msg='';render();break;}
+    case 'bank-edit-cancel':bankSt().edit=null;render();break;
+    case 'bank-edit-save':{
+      const b=bankSt(),e=b.edit;if(!e)break;
+      if(!String(e.subject).trim()){e.err='Type the subject.';render();break;}
+      const p=parseOneQ(e.text);if(p.err){e.err=p.err;render();break;}
+      if(e.keep&&e.keep.q&&e.keep.q.expl)p.q.expl=e.keep.q.expl;
+      const ok=await bankSave([{id:e.id==='new'?undefined:e.id,subject:e.subject,level:e.level,topic:e.topic,status:e.keep?e.keep.status:'ok',q:p.q}]);
+      if(ok){b.edit=null;b.msg=e.id==='new'?'Added to the bank.':'Saved.';}else e.err=b.err;
+      render();break;}
+    case 'bank-accept':{const b=bankSt(),it=(b.items||[]).find(x=>x.id===el.dataset.id);if(!it)break;if(await bankSave([{id:it.id,subject:it.subject,level:it.level,topic:it.topic,status:'ok',q:it.q}]))b.msg='Accepted. It is now in the bank.';render();break;}
+    case 'bank-accept-batch':{const b=bankSt(),list=(b.items||[]).filter(x=>x.status==='draft'&&(x.batch||x.id)===el.dataset.k);
+      if(list.length&&await bankSave(list.map(it=>({id:it.id,subject:it.subject,level:it.level,topic:it.topic,status:'ok',q:it.q}))))b.msg=list.length+' questions accepted. Check them in the bank below.';render();break;}
+    case 'bank-del':{const b=bankSt(),it=(b.items||[]).find(x=>x.id===el.dataset.id);if(!it)break;
+      if(it.status==='draft'){if(await bankSave([],[it.id]))b.msg='Draft deleted.';}else st.conf='bd:'+it.id;
+      render();break;}
+    case 'bank-del-yes':{const b=bankSt();st.conf='';delete b.pick[el.dataset.id];if(await bankSave([],[el.dataset.id]))b.msg='Deleted from the bank.';render();break;}
+    case 'bank-unpick':bankSt().pick={};render();break;
+    case 'bank-build':{
+      const b=bankSt(),bd=b.build,c=cls(bd.cid),its=(b.items||[]).filter(x=>x.status==='ok'&&b.pick[x.id]);
+      if(!c||!its.length){b.err='Pick some questions and a class first.';render();break;}
+      const subj=(bd.subject||its[0].subject).trim(),title=(bd.title||'').trim()||(subj+' Test');
+      let n=0,txt='# '+title+'\n## '+subj+'\n';
+      [['obj','Section A – Multiple choice'],['fib','Section B – Fill in the blank'],['theory','Section C – Theory']].forEach(([t,h])=>{
+        const g=its.filter(x=>qType(x.q)===t);if(!g.length)return;
+        txt+='### '+h+'\n';g.forEach(x=>{n++;txt+=qToText(x.q,n)+'\n';});});
+      const r=parseText(txt);
+      if(!r.exams.length){b.err='Those questions could not be turned into a paper.';render();break;}
+      r.exams.forEach(e=>{const m=e.questions.length;
+        c.exams.push({id:uid(),title:e.title,subject:e.course||e.title,questions:e.questions,secs:e.secs||{},theoryMode:'online',
+          duration:Math.min(120,Math.max(10,Math.ceil(m*0.75/5)*5)),passMark:50,shuffleQ:false,shuffleO:false,showResult:true,showReview:false,open:false});});
+      saveW();b.pick={};b.msg='Paper “'+title+'” added to '+c.name+'. It is closed. Open it under Classes, then Papers.';render();break;}
+    case 'bank-save-exam':{
+      const c=cls(st.cid),ex=c&&c.exams.find(e=>e.id===el.dataset.id);if(!ex)break;
+      const b=bankSt();if(b.items===null)await loadBank();
+      const have=new Set((b.items||[]).filter(x=>nk(x.subject)===nk(ex.subject)).map(x=>nk(x.q.text)));
+      const list=ex.questions.filter(q=>qMarkable(q)&&!have.has(nk(q.text))).map(q=>{const t=qType(q),o={type:t,text:q.text,marks:qMax(q)};
+        if(t==='obj')o.options=q.options.map(x=>({t:x.t,c:!!x.c}));if(t==='fib')o.answers=q.answers;if(t==='theory')o.rubric=q.rubric||[];
+        return {subject:ex.subject,level:c.name,topic:'',status:'ok',by:'paper',q:o};});
+      let saved=0;
+      for(let i=0;i<list.length;i+=50){if(await bankSave(list.slice(i,i+50)))saved+=Math.min(50,list.length-i);else break;}
+      st.flash=saved?saved+' question'+(saved===1?'':'s')+' saved to the question bank.'+(list.length<ex.questions.length?' Questions already there were skipped.':''):(b.err||'Everything in this paper is already in the bank.');
+      render();break;}
     case 'tc-new':st.tc.form={id:'',name:'',pass:'',form:[],subj:[]};st.tc.err='';render();break;
     case 'tc-edit':{const t=st.tc.list.find(x=>x.id===el.dataset.id);if(t){st.tc.form={id:t.id,name:t.name,pass:'',form:JSON.parse(JSON.stringify(t.form||[])),subj:JSON.parse(JSON.stringify(t.subj||[]))};st.tc.err='';}render();break;}
     case 'tc-cancel':st.tc.form=null;st.tc.err='';render();break;
@@ -2140,7 +2330,7 @@ async function act(a,el){
     case 'logout':{const wipe=SRVS.on&&!dirty;st.authed=false;st.flash='';st.asTeacher=false;ses.del(K_AUTH);ses.del(K_USER);ses.del(K_H2);ME=null;
       if(wipe){store.del(K_SRV);store.del(K_DRAFT);location.reload();break;}
       go('home');break;}
-    case 'spage':if(el.dataset.p==='teachers'&&hasTier('growth')){loadTeachers();}st.page=el.dataset.p;st.flash='';st.err='';st.fallback=null;st.conf='';window.scrollTo(0,0);render();break;
+    case 'spage':if(el.dataset.p==='teachers'&&hasTier('growth')){loadTeachers();}if(el.dataset.p==='bank'&&hasTier('growth')){loadBank();}st.page=el.dataset.p;st.flash='';st.err='';st.fallback=null;st.conf='';window.scrollTo(0,0);render();break;
     case 'open-class':st.cid=el.dataset.id;st.page='class';st.tab='register';st.flash='';st.err='';st.imp=null;st.rimp=null;st.rosterText=null;st.conf='';st.fallback=null;window.scrollTo(0,0);render();break;
     case 'ctab':st.tab=el.dataset.t;st.flash='';st.err='';st.conf='';st.fallback=null;st.rosterText=null;st.rimp=null;st.imp=null;render();break;
     case 'child':st.child=el.dataset.n;st.page='child';st.conf='';st.flash='';st.fallback=null;window.scrollTo(0,0);render();break;
@@ -2363,6 +2553,8 @@ $app.addEventListener('change',async e=>{
     if(t.dataset.bind==='form.name'){S.form.eid='';S.err='';}
     render();return;
   }
+  if(t.dataset.bpick){bankSt().pick[t.dataset.bpick]=t.checked;render();return;}
+  if(t.id==='b-find'){render();const f=document.getElementById('b-find');if(f){f.focus();f.setSelectionRange(f.value.length,f.value.length);}return;}
   if(t.dataset.rs==='pick'){st.rimp.pick=+t.value;render();return;}
   if(t.dataset.bk){
     const it=st.bulk.items[+t.dataset.i];

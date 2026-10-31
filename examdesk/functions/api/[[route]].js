@@ -6,5 +6,5 @@ export async function onRequest(context) {
   if (!context.env.DB) {
     return new Response(JSON.stringify({ ok: false, error: 'no_database' }), { status: 500, headers: { 'content-type': 'application/json' } });
   }
-  return makeHandler(d1Store(context.env.DB), { vendorKey: context.env.XD_VENDOR_KEY || '' })(context.request);
+  return makeHandler(d1Store(context.env.DB), { vendorKey: context.env.XD_VENDOR_KEY || '', aiKey: context.env.XD_AI_KEY || '' })(context.request);
 }
