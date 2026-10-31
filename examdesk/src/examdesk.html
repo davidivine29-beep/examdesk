@@ -932,6 +932,7 @@ const TIER='__TIER__',TIER_RANK={core:0,growth:1,campus:2,max:3};
 const hasTier=t=>(TIER_RANK[TIER]!==undefined?TIER_RANK[TIER]:3)>=TIER_RANK[t];
 const PLAN_NAME={core:'Core',growth:'Growth',campus:'Campus',max:'Campus Max'};
 const SRVS={on:false,hasAdmin:false,checked:false,lic:null,ai:false};
+let NEWER=null;   // a newer setup on the server while this device holds unsaved edits
 const switchedOff=()=>SA&&SRVS.on&&!!SRVS.lic&&SRVS.lic.status==='deactivated';
 /* On a school server the page only learns class names. A class access code opens one class (its names and open papers) on this device. */
 const K_UNL='xd2_unl';
@@ -979,7 +980,7 @@ async function srvFetch(path,opt){
   try{return await fetch(path,Object.assign({cache:'no-store',signal:ctl.signal},opt||{}));}finally{clearTimeout(t);}
 }
 function adoptServer(sv){
-  SETUP0=sv;EMBED_STR=JSON.stringify(SETUP0);W=clone(SETUP0);dirty=false;
+  NEWER=null;SETUP0=sv;EMBED_STR=JSON.stringify(SETUP0);W=clone(SETUP0);dirty=false;
   store.set(K_SRV,SETUP0);store.set(K_DRAFT,{base:SETUP0.stamp,setup:W});if(sv.pub)applyUnlocks();applyBrand();
   if(S.view==='home'||S.view==='staff')render();
 }
@@ -1001,7 +1002,7 @@ async function syncServer(){
       const kind=(!!sv.pub!==!!W.pub)||(!!sv.part!==!!W.part);
       if((sv.stamp||0)!==(SETUP0.stamp||0)||kind){
         if(!S.ses&&!dirty){adoptServer(sv);if(!sv.pub&&!sv.part&&S.st.authed&&!ME&&ensureCodes())saveW();}
-        else if(dirty&&(sv.stamp||0)>(SETUP0.stamp||0)){S.st.note='A newer setup was saved to the server. Reload this page to get it. Saving your changes now would be refused.';}
+        else if(dirty&&(sv.stamp||0)>(SETUP0.stamp||0)){NEWER=sv;S.st.note='A newer setup was saved to the server, so saving your changes here would be refused. On Publish and backup, press “Use the server’s version” to load it (your unsaved changes on this device are dropped).';if(S.view==='staff')render();}
       }
       if(sv.pub){
         if(!S.ses&&await refreshUnlocks(sv.stamp||0)||W.classes.some(c=>c.locked&&UNL[c.id])){applyUnlocks();if(!S.ses&&S.view==='home')render();}
@@ -2073,7 +2074,7 @@ function pageSetup(){
   else if(!ART)act='<div class="note">Publishing only works when you open this page from your own Claude account as its owner. On this device you can still run a sitting and save backups.</div>';
   else act='<button class="btn primary" data-act="publish"'+(st.busy?' disabled':'')+'>'+(st.busy?'Publishing…':'Publish setup')+'</button>';
   return '<div class="page-head"><div><span class="eyebrow">Examiner</span><h1>Publish and backup</h1></div></div><div class="stack">'+
-  (st.note?'<div class="note">'+esc(st.note)+'</div>':'')+
+  (st.note?'<div class="note">'+esc(st.note)+(NEWER?'<div class="row" style="margin-top:8px"><button class="btn small primary" data-act="take-server">Use the server’s version</button></div>':'')+'</div>':'')+
   '<section class="card stack"><div class="row" style="justify-content:space-between"><h2>'+(SA&&SRVS.on?'Save to the server':SA?'Update the page':'Publish setup')+'</h2><span class="badge '+(dirty?'warn':'ok')+'">'+(dirty?(SA&&SRVS.on?'Not saved to the server yet':SA?'Not in the page file yet':'Unpublished changes'):'Up to date')+'</span></div>'+
   '<p class="muted">'+(SA&&SRVS.on?'Saving sends your classes, class lists and papers to the server, and every device picks them up when it opens the page. ':SA?'Your classes, class lists and papers are saved inside the page file. Download the updated page and upload it to your host to give every device the new version. ':'Publishing puts your classes, class lists and papers into the page itself, so any device that opens the link has them. ')+'Results are never part of it and stay on the device they were written on.</p>'+
   '<div class="sumrow"><div class="fact"><b>'+W.classes.length+'</b><span>classes</span></div><div class="fact"><b>'+nCh+'</b><span>children</span></div><div class="fact"><b>'+nEx+'</b><span>papers ('+nOpen+' open)</span></div></div>'+
@@ -2267,6 +2268,7 @@ async function act(a,el){
       }else if(W.adminHash&&await hash(st.pass)===W.adminHash){st.authed=true;st.err='';ses.set(K_AUTH,W.adminHash);try{ses.set(K_H2,await hash2(st.pass));}catch(e){}st.pass='';}
       else st.err='That passcode is not correct.';
       render();break;}
+    case 'take-server':{if(!NEWER)break;const sv=NEWER;adoptServer(sv);st.note='';if(!sv.pub&&!sv.part&&ensureCodes())saveW();st.flash='Loaded the version saved on the server.';render();break;}
     case 'gen-run':await genRun();break;
     case 'gen-replace':await genRun(el.dataset.id);break;
     case 'bank-new':{const b=bankSt(),g=b.gf;b.edit={id:'new',subject:g.subject,level:g.level,topic:g.topic,text:'The organ that pumps blood around the body is the\na. lungs\nb. kidney\nc. heart [CORRECT]\nd. liver',err:''};b.err='';b.msg='';render();break;}
