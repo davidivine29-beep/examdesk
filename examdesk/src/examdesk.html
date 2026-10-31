@@ -705,6 +705,7 @@ let W,bootNote='';
 })();
 let dirty=JSON.stringify(W)!==EMBED_STR;
 function saveW(){
+  try{ensureCodes();}catch(e){}
   store.set(K_DRAFT,{base:SETUP0.stamp,setup:W});
   try{reindex();}catch(e){}
   dirty=JSON.stringify(W)!==EMBED_STR;
@@ -763,7 +764,7 @@ function canActR(r){
   return !!ex&&(ME.subj||[]).some(x=>x.cid===c.id&&nk(x.subject)===nk(ex.subject));
 }
 const myClasses=()=>ME?W.classes.filter(c=>(ME.form||[]).some(f=>f.cid===c.id)||(ME.subj||[]).some(x=>x.cid===c.id)):W.classes;
-const authHdr=()=>{const h2=ses.get(K_H2);return ME?{'x-admin':h2,'x-user':ME.id}:{'x-admin':h2};};
+const authHdr=()=>{const h2=ses.get(K_H2);if(!h2)return {};return ME?{'x-admin':h2,'x-user':ME.id}:{'x-admin':h2};};
 const resFor=(cid,name,eid)=>{const r=IDX.get(cid+'|'+nk(name)+'|'+eid)||null;return r&&canActR(r)?r:null;};
 reindex();
 
@@ -900,7 +901,7 @@ async function readWorkbook(file){
 }
 
 /* ---------- state ---------- */
-const S={view:'home',err:'',form:{cid:'',name:'',eid:'',code:''},cand:null,ses:null,res:null,confirmSubmit:false,
+const S={view:'home',err:'',form:{cid:'',name:'',eid:'',code:'',ucode:''},cand:null,ses:null,res:null,confirmSubmit:false,
   st:{authed:false,page:'classes',cid:'',tab:'register',child:'',aeid:'',pass:'',p1:'',p2:'',newPass:'',flash:'',err:'',
     imp:null,paste:'',rimp:null,bulk:null,rosterText:null,newClass:'',conf:'',fallback:null,pending:null,busy:false,openDx:[],note:''}};
 let timerId=null;
@@ -932,13 +933,54 @@ const hasTier=t=>(TIER_RANK[TIER]!==undefined?TIER_RANK[TIER]:3)>=TIER_RANK[t];
 const PLAN_NAME={core:'Core',growth:'Growth',campus:'Campus',max:'Campus Max'};
 const SRVS={on:false,hasAdmin:false,checked:false,lic:null};
 const switchedOff=()=>SA&&SRVS.on&&!!SRVS.lic&&SRVS.lic.status==='deactivated';
+/* On a school server the page only learns class names. A class access code opens one class (its names and open papers) on this device. */
+const K_UNL='xd2_unl';
+let UNL=(()=>{const u=store.get(K_UNL)||{},now=Date.now(),o={};Object.keys(u).forEach(k=>{if(u[k]&&u[k].cls&&u[k].at>now-6*3600*1000)o[k]=u[k];});return o;})();
+const saveUnl=()=>store.set(K_UNL,UNL);
+const tokFor=cid=>(UNL[cid]&&UNL[cid].tok)||'';
+function applyUnlocks(){W.classes=W.classes.map(c=>(c.locked||c.fromUnl)&&UNL[c.id]?Object.assign(clone(UNL[c.id].cls),{fromUnl:1}):c);}
+const CODE_AB='ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+function genCode(){const a=new Uint8Array(6);crypto.getRandomValues(a);return [...a].map(x=>CODE_AB[x%CODE_AB.length]).join('');}
+function ensureCodes(){let n=0;if(!(SA&&SRVS.on)||W.pub||W.part)return 0;W.classes.forEach(c=>{if(!String(c.code||'').trim()){c.code=genCode();n++;}});return n;}
+async function unlockClass(){
+  const f=S.form,fail=m=>{S.err=m;render();};
+  const c=f.cid?cls(f.cid):null;
+  if(!c)return fail('Choose your class.');
+  if(!String(f.ucode||'').trim())return fail('Type the access code.');
+  if(S.busyU)return;
+  S.busyU=true;
+  try{
+    const r=await srvFetch('/api/unlock',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({cid:c.id,code:f.ucode})});
+    const j=await r.json().catch(()=>null);
+    if(r.status===429){S.busyU=false;return fail('Too many wrong codes from this network. Wait a few minutes, then try again.');}
+    if(!j||!j.ok){S.busyU=false;return fail(j&&j.error==='no_code'?'This class has no access code yet. Ask your teacher.':'The access code is not correct.');}
+    UNL[c.id]={tok:j.tok,cls:j.cls,stamp:j.stamp||0,code:String(f.ucode).trim(),at:Date.now()};saveUnl();applyUnlocks();
+    f.ucode='';S.err='';
+  }catch(e){S.busyU=false;return fail('Could not reach the server. Opening a class needs the internet.');}
+  S.busyU=false;render();
+}
+// when the school saves a new setup, classes already opened on this device are fetched again with the code that opened them
+async function refreshUnlocks(stamp){
+  let changed=false;
+  for(const cid of Object.keys(UNL)){
+    const u=UNL[cid];if(!u||u.stamp===stamp)continue;
+    try{
+      const r=await srvFetch('/api/unlock',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({cid,code:u.code})});
+      const j=await r.json().catch(()=>null);
+      if(j&&j.ok){UNL[cid]={tok:j.tok,cls:j.cls,stamp:j.stamp||0,code:u.code,at:u.at};changed=true;}
+      else if(r.status===401){delete UNL[cid];changed=true;}
+    }catch(e){}
+  }
+  if(changed){saveUnl();}
+  return changed;
+}
 async function srvFetch(path,opt){
   const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),7000);
   try{return await fetch(path,Object.assign({cache:'no-store',signal:ctl.signal},opt||{}));}finally{clearTimeout(t);}
 }
 function adoptServer(sv){
   SETUP0=sv;EMBED_STR=JSON.stringify(SETUP0);W=clone(SETUP0);dirty=false;
-  store.set(K_SRV,SETUP0);store.set(K_DRAFT,{base:SETUP0.stamp,setup:W});applyBrand();
+  store.set(K_SRV,SETUP0);store.set(K_DRAFT,{base:SETUP0.stamp,setup:W});if(sv.pub)applyUnlocks();applyBrand();
   if(S.view==='home'||S.view==='staff')render();
 }
 let syncing=false;
@@ -946,14 +988,24 @@ async function syncServer(){
   if(!SA||syncing)return;
   syncing=true;
   try{
-    const r=await srvFetch('/api/setup');
+    const r=await srvFetch('/api/setup',{headers:authHdr()});
     const j=r.ok&&/json/.test(r.headers.get('content-type')||'')?await r.json():null;
     if(!j||j.kind!=='xd-srv'){SRVS.on=false;return;}
     const was=SRVS.on;SRVS.on=true;SRVS.hasAdmin=!!j.hasAdmin;const oldSt=SRVS.lic&&SRVS.lic.status;SRVS.lic=j.licence||null;SRVS.checked=true;if(oldSt!==(SRVS.lic&&SRVS.lic.status)&&!S.ses&&(S.view==='home'||S.view==='staff'))setTimeout(render,0);store.set(K_HASSRV,1);
+    if(j.authFailed&&S.st.authed){
+      S.st.authed=false;ses.del(K_AUTH);ses.del(K_H2);ses.del(K_USER);ME=null;S.st.err='Your passcode is no longer valid. Sign in again.';
+      if(S.view==='staff')render();
+    }
     const sv=j.setup;
-    if(sv&&Array.isArray(sv.classes)&&(sv.stamp||0)!==(SETUP0.stamp||0)){
-      if(!S.ses&&!dirty)adoptServer(sv);
-      else if(dirty&&(sv.stamp||0)>(SETUP0.stamp||0)){S.st.note='A newer setup was saved to the server. Reload this page to get it. Saving your changes now would be refused.';}
+    if(sv&&Array.isArray(sv.classes)&&!(sv.pub&&S.st.authed)){
+      const kind=(!!sv.pub!==!!W.pub)||(!!sv.part!==!!W.part);
+      if((sv.stamp||0)!==(SETUP0.stamp||0)||kind){
+        if(!S.ses&&!dirty){adoptServer(sv);if(!sv.pub&&!sv.part&&S.st.authed&&!ME&&ensureCodes())saveW();}
+        else if(dirty&&(sv.stamp||0)>(SETUP0.stamp||0)){S.st.note='A newer setup was saved to the server. Reload this page to get it. Saving your changes now would be refused.';}
+      }
+      if(sv.pub){
+        if(!S.ses&&await refreshUnlocks(sv.stamp||0)||W.classes.some(c=>c.locked&&UNL[c.id])){applyUnlocks();if(!S.ses&&S.view==='home')render();}
+      }
     }
     if(!was&&S.view==='staff')render();
     flushResults();
@@ -963,6 +1015,8 @@ async function syncServer(){
 }
 async function srvSave(){
   const st=S.st;if(st.busy)return;
+  if(W.pub||W.part){st.err='This device only holds a partial copy of the setup. Lock, then sign in as the administrator, and try again.';render();return;}
+  ensureCodes();
   let h2=ses.get(K_H2);
   if(!h2){
     if(!st.savePass){st.err='Type your passcode to save.';render();return;}
@@ -1014,12 +1068,12 @@ async function flushResults(){
       const r=await srvFetch('/api/result',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({results:batch})});
       const j=await r.json().catch(()=>null);
       if(!r.ok||!j||!j.ok)break;
-      (j.accepted||[]).forEach(id=>SYNCED.add(id));
+      (j.accepted||[]).forEach(id=>{SYNCED.add(id);const x=R.find(y=>y.id===id);if(x&&x.tok)delete x.tok;});
       (j.rejected||[]).forEach(x=>{if(x&&x.id)REJ[x.id]=x.reason||'refused';});
     }
   }catch(e){}
   finally{
-    flushing=false;saveSync();
+    flushing=false;saveSync();saveR();
     if(pendingList().length!==before)refreshSyncUI();
   }
 }
@@ -1184,6 +1238,7 @@ function finish(auto){
     score:m.score,total:m.total,pct:m.pct,grade:m.grade,pass:m.pass,passMark:s.exam.passMark,
     startedAt:s.startedAt,submittedAt:now,usedSec:Math.min(Math.round((now-s.startedAt)/1000),s.exam.duration*60),auto:!!auto,
     ans,txt,ok,sig:sigOf(s.exam),prov:m.prov,cbt:m.cbt};
+  const tk=tokFor(s.cid);if(tk)r.tok=tk;
   R.push(r);saveR();store.del(K_SES);
   stopTimer();
   if(SA)setTimeout(flushResults,50);
@@ -1228,7 +1283,7 @@ function liveAnswered(p){
   const c=document.getElementById('ansc');if(c)c.textContent=ansCount(s)+' / '+s.qs.length+' answered';
   const cl=document.querySelector('[data-act="clear"]');if(cl)cl.disabled=!a;
 }
-const openClasses=()=>W.classes.filter(c=>openExams(c).length);
+const openClasses=()=>W.classes.filter(c=>c.locked?c.hasOpen:openExams(c).length);
 function subjLabel(c,e){
   const dup=openExams(c).filter(x=>x.subject===e.subject).length>1;
   return e.subject+(dup?' ('+e.title+')':'');
@@ -1253,9 +1308,10 @@ function viewHome(){
       return '<option value="'+esc(e.id)+'"'+(e.id===f.eid?' selected':'')+(done?' disabled':'')+'>'+esc(subjLabel(c,e))+(done?' (already written)':'')+'</option>';
     }).join(''):'')+'</select></label>';
     const code=c&&c.code?'<label class="f">Access code<span class="hint">Given by your invigilator</span><input id="f-code" type="text" data-bind="form.code" value="'+esc(f.code)+'" autocomplete="off"></label>':'';
-    form='<form class="form" data-form="check" autocomplete="off">'+selClass+selName+selSub+code+
+    const ucode=c&&c.locked?'<label class="f">Access code<span class="hint">Given by your teacher or invigilator</span><input id="f-ucode" type="text" data-bind="form.ucode" value="'+esc(f.ucode)+'" autocomplete="off" autocapitalize="characters"></label>':'';
+    form='<form class="form" data-form="check" autocomplete="off">'+selClass+(c&&c.locked?ucode:selName+selSub+code)+
       (S.err?'<div class="err" role="alert">'+esc(S.err)+'</div>':'')+
-      '<button class="btn primary" type="submit" data-act="check">Continue</button></form>';
+      '<button class="btn primary" type="submit" data-act="check">'+(c&&c.locked?'Open class':'Continue')+'</button></form>';
   }
   return topBar('<button class="btn small ghost" data-act="staff">Examiner</button>')+
   '<div class="home"><section class="card"><div class="lead"><span class="eyebrow">Candidate sign-in</span><h1>Start your test</h1><p class="muted">Choose your class, find your name, then pick the subject you are writing.</p></div>'+form+'</section>'+
@@ -1581,7 +1637,7 @@ function tabCSettings(c){
   return '<div class="stack"><section class="card stack"><h2>Class settings</h2>'+
     '<label class="f">Class name<input id="c-name" type="text" data-cl="name" value="'+esc(c.name)+'"></label>'+
     '<div class="f"><span style="font-weight:600;font-size:.9rem">Colour</span><div class="hue">'+[1,2,3,4,5,6].map(h=>'<button type="button" data-act="hue" data-h="'+h+'" aria-pressed="'+(c.hue===h)+'" aria-label="Colour '+h+'" style="background:var(--h'+h+')"></button>').join('')+'</div></div>'+
-    '<label class="f">Access code<span class="hint">Children must type this to continue. Leave empty for none.</span><input id="c-code" type="text" data-cl="code" value="'+esc(c.code)+'" autocomplete="off"></label>'+
+    (SA&&SRVS.on?'<label class="f">Class access code<span class="hint">Children type this to open this class on their device. Without it nobody can see the class list.</span><span class="row" style="gap:8px"><input id="c-code" type="text" data-cl="code" value="'+esc(c.code)+'" autocomplete="off" style="flex:1"><button class="btn small" type="button" data-act="newcode">New code</button></span></label>':'<label class="f">Access code<span class="hint">Children must type this to continue. Leave empty for none.</span><input id="c-code" type="text" data-cl="code" value="'+esc(c.code)+'" autocomplete="off"></label>')+
     '<label class="check"><input type="checkbox" id="c-rank" data-cl="showRank"'+(c.showRank?' checked':'')+'>Show class positions (only for children who have written every paper)</label></section>'+
     '<section class="card stack"><h2>Delete class</h2><p class="muted">Removes the class, its list and its papers from the setup. Results already saved on devices stay there but no longer appear.</p><div class="row">'+(st.conf==='dc:'+c.id?'<button class="btn danger small" data-act="del-class">Yes, delete '+esc(c.name)+'</button><button class="btn small" data-act="conf-no">Cancel</button>':'<button class="btn danger small" data-act="del-class">Delete class</button>')+'</div></section></div>';
 }
@@ -2057,7 +2113,10 @@ async function act(a,el){
           const j=await r.json().catch(()=>({}));
           if(j&&j.ok){
             if(j.role==='teacher'){ME=j.teacher;ses.set(K_USER,ME);st.page='classes';}else{ME=null;ses.del(K_USER);}
-            st.authed=true;st.err='';st.pass='';ses.set(K_AUTH,h2);ses.set(K_H2,h2);setTimeout(()=>{pullResults();pullMarks();},50);}
+            st.authed=true;st.err='';st.pass='';ses.set(K_AUTH,h2);ses.set(K_H2,h2);
+            for(let i=0;i<30&&syncing;i++)await new Promise(z=>setTimeout(z,100));
+            await syncServer();
+            setTimeout(()=>{pullResults();pullMarks();},50);}
           else if(r.status===429)st.err='Too many wrong attempts. Wait a few minutes, then try again.';
           else st.err=st.asTeacher?'That name or passcode is not correct.':'That passcode is not correct.';
         }catch(e){st.err='Could not reach the server. Signing in needs the internet.';}
@@ -2078,12 +2137,15 @@ async function act(a,el){
       else{st.conf='tcd:'+id;render();}
       break;}
     case 'login-mode':st.asTeacher=!st.asTeacher;st.err='';render();break;
-    case 'logout':st.authed=false;st.flash='';st.asTeacher=false;ses.del(K_AUTH);ses.del(K_USER);ses.del(K_H2);ME=null;go('home');break;
+    case 'logout':{const wipe=SRVS.on&&!dirty;st.authed=false;st.flash='';st.asTeacher=false;ses.del(K_AUTH);ses.del(K_USER);ses.del(K_H2);ME=null;
+      if(wipe){store.del(K_SRV);store.del(K_DRAFT);location.reload();break;}
+      go('home');break;}
     case 'spage':if(el.dataset.p==='teachers'&&hasTier('growth')){loadTeachers();}st.page=el.dataset.p;st.flash='';st.err='';st.fallback=null;st.conf='';window.scrollTo(0,0);render();break;
     case 'open-class':st.cid=el.dataset.id;st.page='class';st.tab='register';st.flash='';st.err='';st.imp=null;st.rimp=null;st.rosterText=null;st.conf='';st.fallback=null;window.scrollTo(0,0);render();break;
     case 'ctab':st.tab=el.dataset.t;st.flash='';st.err='';st.conf='';st.fallback=null;st.rosterText=null;st.rimp=null;st.imp=null;render();break;
     case 'child':st.child=el.dataset.n;st.page='child';st.conf='';st.flash='';st.fallback=null;window.scrollTo(0,0);render();break;
     case 'back-class':st.page='class';st.conf='';window.scrollTo(0,0);render();break;
+    case 'newcode':{const c=cls(st.cid);if(!c)break;if(c.code)c.prevCodes=(c.prevCodes||[]).filter(x=>nk(x)!==nk(c.code)).concat(c.code).slice(-20);c.code=genCode();saveW();st.flash='New code for '+c.name+': '+c.code+'. Save to the server so it takes effect.';render();break;}
     case 'addclass':{
       const nm=cleanName(st.newClass);
       if(!nm){st.err='Type a class name.';render();break;}
@@ -2199,6 +2261,7 @@ async function beginCheck(){
   const f=S.form,fail=m=>{S.err=m;render();};
   const c=f.cid?cls(f.cid):null;
   if(!c)return fail('Choose your class.');
+  if(c.locked)return unlockClass();
   if(!f.name)return fail('Choose your name from the list.');
   const ex=c.exams.find(e=>e.id===f.eid&&e.open);
   if(!ex)return fail('Choose a subject.');
@@ -2296,7 +2359,7 @@ $app.addEventListener('change',async e=>{
   const t=e.target,st=S.st;
   if(t.dataset.bind&&t.tagName==='SELECT'){
     setPath(t.dataset.bind,t.value);
-    if(t.dataset.bind==='form.cid'){S.form.name='';S.form.eid='';S.form.code='';S.err='';}
+    if(t.dataset.bind==='form.cid'){S.form.name='';S.form.eid='';S.form.code='';S.form.ucode='';S.err='';}
     if(t.dataset.bind==='form.name'){S.form.eid='';S.err='';}
     render();return;
   }
@@ -2338,6 +2401,7 @@ $app.addEventListener('change',async e=>{
     }
     if(k==='showRank')c[k]=t.checked;
     else if(k==='name'){const v=cleanName(t.value);if(!v)return;c.name=v;}
+    else if(k==='code'){const v=cleanName(t.value);if(c.code&&nk(c.code)!==nk(v))c.prevCodes=(c.prevCodes||[]).filter(x=>nk(x)!==nk(c.code)).concat(c.code).slice(-20);c.code=v;if(SA&&SRVS.on&&!v){saveW();render();return;}}
     else c[k]=cleanName(t.value);
     saveW();return;
   }
@@ -2385,6 +2449,7 @@ window.addEventListener('beforeunload',e=>{if(S.view==='exam'){e.preventDefault(
   const st=S.st;
   applyBrand();
   if(bootNote)st.note=bootNote;
+  if(W.pub)applyUnlocks();
   const au=ses.get(K_AUTH);
   if(au&&W.adminHash&&(au===W.adminHash||(W.adminHash==='srv'&&au.length===64)))st.authed=true;
   const af=ses.get(K_AFTER);

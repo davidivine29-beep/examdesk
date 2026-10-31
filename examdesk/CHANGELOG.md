@@ -1,3 +1,10 @@
+## Private class lists and administrator reset
+- On a school server the public page now learns class names only. A child opens a class by typing its **class access code**; only then do that class's names and open papers reach the device. Codes are made automatically (6 characters) and can be changed or renewed with **New code** in the class Settings. After a renewal the old code no longer opens the class, but results written under it still arrive.
+- Results must carry the class token; guessing codes or tokens is counted per network address and locked for 5 minutes after 40 wrong tries.
+- Locking the examiner pages removes the class lists from that device. A device that holds only the public or a teacher's partial copy can never overwrite the real setup.
+- **Forgotten administrator passcode:** in the vendor console choose *Reset administrator passcode*. It sets a temporary passcode (shown once), signs out anyone signed in, and leaves classes, papers and results untouched. The school then changes it under Publish and backup.
+- A class must be opened with the internet, then keeps working on that device for 6 hours even offline.
+
 ## Teacher accounts and arms (Growth and above)
 - The administrator adds teachers (Teachers page) with a name and passcode. Each teacher is a **form teacher** of a class or a single arm, a **subject teacher** for a subject in a class, or both, in any number of classes.
 - Teachers sign in with "I am a teacher" and only see the classes, arms and subjects assigned to them. The server enforces it: results and marks outside their scope are never sent, and marks outside it are refused.

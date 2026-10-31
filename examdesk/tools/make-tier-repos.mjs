@@ -21,7 +21,7 @@ const only = process.argv[2];
 const todo = PLANS.filter((p) => !only || p[0] === only || p[1] === only);
 if (!todo.length) { console.error('Unknown plan. Use core, growth, campus or max.'); process.exit(1); }
 
-const SKIP = new Set(['node_modules', '.git', '.netlify', 'tools', 'cloudflare-upload', 'public']);
+const SKIP = new Set(['node_modules', '.git', '.netlify', 'tools', 'cloudflare-upload', 'netlify-upload', 'public']);
 mkdirSync(outRoot, { recursive: true });
 
 for (const [tier, name, label] of todo) {
@@ -67,6 +67,7 @@ for (const [tier, name, label] of todo) {
   try {
     execFileSync('node', ['build.mjs'], { cwd: dir, stdio: 'inherit' });
     execFileSync('node', ['build-cloudflare.mjs'], { cwd: dir, stdio: 'inherit' });
+    execFileSync('node', ['build-netlify-drop.mjs'], { cwd: dir, stdio: 'inherit' });
   } finally { unlinkSync(nm); }
   if (!existsSync(join(dir, 'public', 'index.html'))) throw new Error('build produced no page for ' + name);
 

@@ -42,7 +42,7 @@ export function makeHandler(store, opts = {}) {
       headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...extra },
     });
   // The licence address may be called from the vendor console (a page opened from your own PC). Changing anything still needs the vendor key.
-  const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type,x-vendor', 'access-control-allow-methods': 'GET,PUT,OPTIONS', 'access-control-max-age': '600' };
+  const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type,x-vendor', 'access-control-allow-methods': 'GET,PUT,POST,OPTIONS', 'access-control-max-age': '600' };
   const jl = (o, status = 200) => json(o, status, CORS);
 
   // Wrong guesses slow down, and after MAX_FAILS inside the window the passcode is locked for LOCK_MS.
@@ -99,6 +99,32 @@ export function makeHandler(store, opts = {}) {
     const c = await checkWith(t ? t.auth : 'none', 'lock:' + (t ? t.id : 'unknown'), h2);
     return c.ok && t ? { ok: true, role: 'teacher', teacher: t } : { ok: false, locked: c.locked };
   }
+  // ---- class lists are not public. The page only learns class names until a class access code unlocks that one class.
+  const clientIp = (req) => (req.headers.get('x-nf-client-connection-ip') || req.headers.get('cf-connecting-ip') || String(req.headers.get('x-forwarded-for') || '').split(',')[0] || 'x').trim().slice(0, 64);
+  const tokOf = (cid, code) => sha('xd-tok:' + cid + ':' + nk(code));
+  const stubClass = (c) => ({ id: c.id, name: c.name, hue: c.hue, locked: true, hasOpen: (c.exams || []).some((e) => e.open && (e.questions || []).length > 0), roster: [], exams: [] });
+  const candClass = (c) => { const o = { ...c, exams: (c.exams || []).filter((e) => e.open) }; delete o.code; delete o.prevCodes; delete o.armOf; return o; };
+  const publicView = (setup) => ({ ...setup, pub: true, classes: (setup.classes || []).map(stubClass) });
+  const teacherView = (setup, t) => ({ ...setup, part: true, classes: (setup.classes || []).filter((c) => (t.form || []).some((f) => f.cid === c.id) || (t.subj || []).some((x) => x.cid === c.id)).map((c) => { const o = { ...c }; delete o.code; delete o.prevCodes; return o; }) });
+  // wrong class codes are counted per network address (a whole school shares one, so the allowance is generous)
+  const UFAILS = opts.unlockFails ?? 40, ULOCK = opts.unlockLockMs ?? 5 * 60 * 1000;
+  const ipKey = async (req) => 'ulock:' + (await sha('xd-ip:' + clientIp(req))).slice(0, 32);
+  async function ipState(key) { try { return JSON.parse((await store.get(key)) || '{}'); } catch (e) { return {}; } }
+  async function ipLocked(key) { const l = await ipState(key); return !!(l.until && l.until > Date.now()); }
+  async function ipFail(key) {
+    const now = Date.now(), l = await ipState(key);
+    const fresh = l.first && now - l.first < WINDOW_MS;
+    const fails = (fresh ? l.fails || 0 : 0) + 1;
+    const next = { fails, first: fresh ? l.first : now };
+    if (fails >= UFAILS) { next.until = now + ULOCK; next.fails = 0; next.first = 0; }
+    await store.set(key, JSON.stringify(next));
+  }
+  async function tokOk(c, tok) {
+    if (typeof tok !== 'string' || !HEX64.test(tok)) return false;
+    let ok = false;
+    for (const code of [c.code].concat(Array.isArray(c.prevCodes) ? c.prevCodes : [])) if (code && same(await tokOf(c.id, code), tok)) ok = true;
+    return ok;
+  }
   // saving anything is blocked when the licence is off, suspended or expired (reading never is)
   async function licBlock() {
     const lic = await getLicence();
@@ -118,8 +144,49 @@ export function makeHandler(store, opts = {}) {
         const raw = await store.get('setup');
         const hasAdmin = !!(await store.get('auth'));
         const setup = raw ? JSON.parse(raw) : null;
-        if (setup) setup.adminHash = hasAdmin ? 'srv' : '';
-        return json({ kind: 'xd-srv', v: 1, hasAdmin, setup, licence: licView(await getLicence(), setup, Date.now()) });
+        let view = setup, authFailed = false;
+        if (setup) {
+          setup.adminHash = hasAdmin ? 'srv' : '';
+          if (hasAdmin) {
+            view = null;
+            if (req.headers.get('x-admin')) {
+              const c = await principal(req);
+              if (c.ok) view = c.role === 'admin' ? setup : teacherView(setup, c.teacher);
+              else if (!c.locked) authFailed = true;
+            }
+            if (!view) view = publicView(setup);
+          }
+        }
+        return json({ kind: 'xd-srv', v: 1, hasAdmin, setup: view, authFailed, licence: licView(await getLicence(), setup, Date.now()) });
+      }
+
+      // A child opens one class by typing its access code. Wrong guesses are counted and slowed.
+      if (path === '/api/unlock' && req.method === 'POST') {
+        const ik = await ipKey(req);
+        if (await ipLocked(ik)) return json({ ok: false, locked: true }, 429);
+        const b = await req.json();
+        const raw = await store.get('setup');
+        const setup = raw ? JSON.parse(raw) : null;
+        const c = setup && (setup.classes || []).find((x) => x.id === (b && b.cid));
+        if (!c || !c.code || typeof b.code !== 'string' || nk(b.code) !== nk(c.code)) {
+          await ipFail(ik);
+          await sleep(failDelay);
+          return json({ ok: false, error: c && !c.code ? 'no_code' : 'wrong' }, 401);
+        }
+        return json({ ok: true, tok: await tokOf(c.id, c.code), stamp: setup.stamp || 0, cls: candClass(c) });
+      }
+
+      if (path === '/api/reset-admin' && req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
+
+      // The vendor (you) sets a new temporary administrator passcode; the school then changes it to their own.
+      if (path === '/api/reset-admin' && req.method === 'POST') {
+        if (!(await vendorOk(req))) { await sleep(failDelay); return jl({ ok: false, error: vendorKey ? 'forbidden' : 'vendor_disabled' }, 403); }
+        const b = await req.json();
+        if (!b || typeof b.h2 !== 'string' || !HEX64.test(b.h2)) return jl({ ok: false, error: 'bad' }, 400);
+        if (!(await store.get('auth'))) return jl({ ok: false, error: 'not_claimed' }, 409);
+        await store.set('auth', await sha(b.h2));
+        await store.set('lock', '{}');
+        return jl({ ok: true });
       }
 
       if (path === '/api/licence' && req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
@@ -179,6 +246,8 @@ export function makeHandler(store, opts = {}) {
         const body = JSON.parse(text);
         const setup = body && body.setup;
         if (!setup || !Array.isArray(setup.classes)) return json({ ok: false, error: 'bad' }, 400);
+        // a device that only holds the public or a teacher's partial copy must never overwrite the real setup
+        if (setup.pub || setup.part || setup.classes.some((c) => c && c.locked)) return json({ ok: false, error: 'public_copy' }, 400);
         const h2 = req.headers.get('x-admin') || '';
         // licence rules apply to saving the setup only; results and sittings are never blocked
         const lic = await getLicence();
@@ -224,7 +293,11 @@ export function makeHandler(store, opts = {}) {
         if (!raw) return json({ ok: false, error: 'no_setup' }, 409);
         const setup = JSON.parse(raw);
         const accepted = [], rejected = [];
-        for (const r of list) {
+        const ik = await ipKey(req);
+        if (await ipLocked(ik)) return json({ ok: false, locked: true }, 429);
+        let badTok = false;
+        for (const r0 of list) {
+          const r = r0 && typeof r0 === 'object' ? { ...r0 } : r0;
           const id = r && r.id;
           if (!ID.test(String(id))) { rejected.push({ id, reason: 'bad' }); continue; }
           if (JSON.stringify(r).length > 100000) { rejected.push({ id, reason: 'too_large' }); continue; }
@@ -232,6 +305,8 @@ export function makeHandler(store, opts = {}) {
           const cls = (setup.classes || []).find((c) => c.id === r.cid);
           const exam = cls && (cls.exams || []).find((e) => e.id === r.eid);
           if (!cls || !exam) { rejected.push({ id, reason: 'unknown_paper' }); continue; }
+          if (cls.code && !(await tokOk(cls, r.tok))) { badTok = true; rejected.push({ id, reason: 'bad_token' }); continue; }
+          delete r.tok;
           const onList = (cls.roster || []).some((n) => nk(n) === nk(r.name));
           const numbers = ['score', 'total', 'pct', 'submittedAt', 'startedAt', 'usedSec'].every((k) => typeof r[k] === 'number' && Number.isFinite(r[k]));
           if (!onList || !numbers || typeof r.name !== 'string') { rejected.push({ id, reason: onList ? 'bad' : 'unknown_name' }); continue; }
@@ -244,6 +319,7 @@ export function makeHandler(store, opts = {}) {
           await store.set(ck, String(have + 1));
           accepted.push(id);
         }
+        if (badTok) await ipFail(ik);
         return json({ ok: true, accepted, rejected });
       }
 

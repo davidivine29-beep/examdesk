@@ -7,7 +7,8 @@
   "scripts": {
     "test": "node test/handler.test.mjs && STORE=d1 node --no-warnings test/handler.test.mjs",
     "build": "node build.mjs",
-    "build:cloudflare": "node build-cloudflare.mjs"
+    "build:cloudflare": "node build-cloudflare.mjs",
+    "build:netlify-drop": "node build-netlify-drop.mjs"
   },
   "dependencies": {
     "@netlify/blobs": "^8.1.0"

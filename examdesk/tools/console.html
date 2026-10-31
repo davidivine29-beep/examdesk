@@ -77,6 +77,7 @@ const store={
 let schools=store.get('xdc:schools',[]);
 let keys=store.get('xdc:keys',{});
 let sess={};            // keys typed this session, kept in memory only
+let reveal={};         // id -> temporary passcode shown once, kept in memory only
 let live={};            // id -> {loading, err, lic}
 let sel=schools.length?schools[0].id:null, adding=false, note={}; // note: id -> {t:'ok'|'err', m}
 const save=()=>store.set('xdc:schools',schools);
@@ -84,11 +85,11 @@ const toast=m=>{const t=$('toast');t.textContent=m;t.classList.add('on');clearTi
 const base=u=>{u=String(u||'').trim().replace(/\s+/g,'');if(!u)return '';if(!/^https?:\/\//i.test(u))u='https://'+u;try{return new URL(u).origin;}catch(e){return '';}};
 const nextId=()=>schools.reduce((a,s)=>Math.max(a,s.id),0)+1;
 
-async function call(s,method,body,key){
+async function call(s,method,body,key,path){
   const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),9000);
   try{
     const h={};if(body)h['content-type']='application/json';if(key)h['x-vendor']=key;
-    const r=await fetch(base(s.url)+'/api/licence',{method,headers:h,body:body?JSON.stringify(body):undefined,cache:'no-store',signal:ctl.signal});
+    const r=await fetch(base(s.url)+(path||'/api/licence'),{method,headers:h,body:body?JSON.stringify(body):undefined,cache:'no-store',signal:ctl.signal});
     const j=await r.json().catch(()=>null);
     return {status:r.status,j};
   }catch(e){return {status:0,j:null};}finally{clearTimeout(t);}
@@ -159,6 +160,9 @@ function detail(){
   (n?'<div class="msg '+n.t+'">'+esc(n.m)+'</div>':'')+
   '<label>Notes (kept on this PC)</label><textarea id="notes">'+esc(s.notes)+'</textarea>'+
   '<h2 style="margin-top:14px;font-size:14px">Switch on / off</h2>'+act+
+  '<h2 style="margin-top:14px;font-size:14px">Administrator passcode</h2>'+
+  (reveal[s.id]?'<div class="msg ok">Give this temporary passcode to the school administrator. It is shown once and not saved anywhere:<div style="font:600 20px ui-monospace,monospace;letter-spacing:.06em;margin:8px 0;user-select:all" id="tmp">'+esc(reveal[s.id])+'</div>They sign in with it, open <b>Publish and backup</b>, and change it to their own passcode. <button class="btn sm" id="tmpdone" type="button">I have noted it</button></div>':
+  '<p class="mut">If the school has forgotten the administrator passcode, set a temporary one. Their classes, papers and results are not touched, and they should change it straight after signing in.</p><div class="row tight"><button class="btn d" id="resetadm" type="button">Reset administrator passcode</button></div>')+
   '<h2 style="margin-top:14px;font-size:14px">Recent changes</h2><ul class="log">'+(logs||'<li class="mut">Nothing yet</li>')+'</ul>'+
   '<div class="row tight" style="margin-top:14px"><button class="btn d sm" id="rm">Remove from my list</button></div>';
   const q=id=>$(id);
@@ -175,6 +179,27 @@ function detail(){
     if(!Number.isFinite(paid)){setNote(s,'err','Choose a paid-until date.');return;}
     const body={plan:q('plan').value,cap:parseInt(q('cap').value,10),paidUntil:paid,graceDays:parseInt(q('grace').value,10),enforce:q('enf').value,school:s.name};
     await put(s,body,key,'Saved: '+PLAN[body.plan][0]+', cap '+body.cap+', paid until '+fd(paid));
+  };
+  if(q('tmpdone'))q('tmpdone').onclick=()=>{delete reveal[s.id];draw();};
+  if(q('resetadm'))q('resetadm').onclick=async()=>{
+    const key=getKey();if(!key)return;
+    if(!confirm('Reset the administrator passcode for '+s.name+'? Their current passcode stops working immediately, and every signed-in examiner is signed out.'))return;
+    const a=new Uint8Array(12),AB='ABCDEFGHJKMNPQRSTUVWXYZ23456789';crypto.getRandomValues(a);
+    const temp=[...a].map(x=>AB[x%AB.length]).join('');
+    const dig=await crypto.subtle.digest('SHA-256',new TextEncoder().encode('xd-auth:'+temp));
+    const h2=[...new Uint8Array(dig)].map(x=>x.toString(16).padStart(2,'0')).join('');
+    setNote(s,'ok','Resetting…');
+    const r=await call(s,'POST',{h2},key,'/api/reset-admin');
+    if(r.status===200&&r.j&&r.j.ok){
+      reveal[s.id]=temp;s.log=(s.log||[]).concat([{t:Date.now(),m:'Administrator passcode reset'}]).slice(-100);save();
+      note[s.id]={t:'ok',m:'Done. The old passcode no longer works.'};draw();return;
+    }
+    const e=r.j&&r.j.error;
+    setNote(s,'err',r.status===0?'Could not reach the site. Check the link and your internet.':
+      e==='forbidden'?'That key was not accepted. Check it matches XD_VENDOR_KEY on this site.':
+      e==='vendor_disabled'?'This site has no vendor key set. Add XD_VENDOR_KEY, redeploy, then try again.':
+      e==='not_claimed'?'This site has no administrator passcode yet, so there is nothing to reset.':
+      r.status===404?'This site does not have the reset feature yet. Deploy the newest version first.':'The site refused the reset ('+(e||r.status)+').');
   };
   if(q('go')){let lvl='suspended';
     d.querySelectorAll('.opt').forEach(o=>o.onclick=()=>{lvl=o.dataset.lvl;d.querySelectorAll('.opt').forEach(x=>{x.classList.toggle('on',x===o);x.querySelector('input').checked=x===o;});q('go').textContent=lvl==='off'?'Switch off school':'Suspend school';});

@@ -40,6 +40,10 @@ Papers can mix multiple choice, fill-in-the-blank and theory questions. In the e
 - **Theory:** a `Rubric: sunlight | carbon dioxide / CO2 | chlorophyll (2)` line lists the keywords.
 - Theory scores stay **Provisional** until a teacher confirms them in the **Marking** tab. Every change is kept with the marker\u2019s name and the time.
 
+## Class access codes and passcode reset
+Every class has an access code (Settings tab of the class). Children choose their class and type the code before their names appear, so the class lists are not public. Give the code to the invigilator on the day; press **New code** to change it, then **Save to the server**.
+If a school forgets the administrator passcode, open the vendor console, pick the school, enter your vendor key and press **Reset administrator passcode**. Read the temporary passcode to the school; they sign in with it and change it under Publish and backup.
+
 ## Teacher accounts (Growth and above)
 Open **Teachers** as the administrator and add each teacher with a name and passcode. Give them **Form teacher of** a class (or one arm) and/or **Subject teacher for** a subject in a class. Teachers sign in from the examiner page with **I am a teacher**. To split a class into arms, use the **Arms** card on the class list tab.
 
@@ -80,6 +84,9 @@ Pushing a change to the repository redeploys every linked site, so test before y
 ## Installing as an app
 Phones and computers can install the page to the home screen or desktop, with the ExamDesk icon.
 After an update to the icons, remove the old installed copy and install it again.
+
+## Netlify without Git (drag and drop)
+Run `npm run build` then `npm run build:netlify-drop`, and drag the **netlify-upload** folder onto Netlify (Sites, then "Deploy manually"). It contains the site and the server function bundled into one file, so it needs no build on Netlify. Set `XD_VENDOR_KEY` under Site configuration, Environment variables, then redeploy once.
 
 ## Cloudflare Pages without Git (drag and drop)
 Run `npm run build:cloudflare`. It makes a folder `cloudflare-upload` holding the finished site and one bundled `_worker.js`.

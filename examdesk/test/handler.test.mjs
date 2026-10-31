@@ -179,7 +179,7 @@ ok(r.s === 200 && r.j.licence.students === 200, 'exactly at the cap saves');
 const stL = r.j.stamp;
 r = await call4('PUT', '/api/setup', { setup: sized(201), baseStamp: stL }, { 'x-admin': A });
 ok(r.s === 402 && r.j.error === 'over_cap' && r.j.cap === 200 && r.j.count === 201, 'one over the cap is refused with the numbers');
-r = await call4('GET', '/api/setup');
+r = await call4('GET', '/api/setup', null, { 'x-admin': A });
 ok(r.j.setup.classes[0].roster.length === 200, 'refused save left the stored setup unchanged');
 await call4('PUT', '/api/licence', { plan: 'core', cap: 150, paidUntil: Date.now() + 30 * 86400000 }, V);
 r = await call4('PUT', '/api/setup', { setup: sized(180), baseStamp: stL }, { 'x-admin': A });
@@ -368,6 +368,83 @@ r = await call4('PUT', '/api/teachers', { teachers: [] }, { 'x-admin': A });
 ok(r.s === 403 && r.j.error === 'plan', 'teacher accounts are refused on the Core plan');
 r = await call4('POST', '/api/login', { h2: TA, user: 'Mrs Ade' });
 ok(r.s === 401, 'teacher sign-in is refused on the Core plan');
+
+// ---- class lists are private until a class code unlocks them; the vendor can reset the administrator passcode
+mem.clear();
+const hU = makeHandler(store, { failDelayMs: 1, vendorKey: VK, unlockFails: 4 });
+const cU = async (method, path, body, headers = {}) => {
+  const r = await hU(new Request('http://x' + path, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'content-type': 'application/json', ...headers } }));
+  return { s: r.status, j: await r.json() };
+};
+const IP = (n) => ({ 'x-nf-client-connection-ip': '10.0.0.' + n });
+const ex1 = { id: 'e1', subject: 'Maths', title: 'T', open: true, questions: [{ q: 'x' }] }, ex2 = { id: 'e2', subject: 'Eng', title: 'T2', open: false, questions: [{ q: 'y' }] };
+const setupU = { v: 2, stamp: 0, school: 'S', adminHash: 'x', classes: [
+  { id: 'b1', name: 'Basic 1', hue: 1, code: 'K7M-2Q', prevCodes: ['OLDCODE'], roster: ['Okafor Ngozi', 'Bello Amina'], armOf: { 'Bello Amina': 'A' }, exams: [ex1, ex2] },
+  { id: 'b2', name: 'Basic 2', hue: 2, code: '', roster: ['Ade Tunde'], exams: [] },
+] };
+r = await cU('PUT', '/api/setup', { setup: setupU, baseStamp: 0 }, { 'x-admin': A });
+ok(r.s === 200, 'U: setup with class codes saves');
+r = await cU('GET', '/api/setup');
+const pj = JSON.stringify(r.j);
+ok(r.j.setup.pub === true && r.j.setup.classes.length === 2 && r.j.setup.classes.every((c) => c.locked && c.roster.length === 0 && c.exams.length === 0), 'U: the public page gets class names only');
+ok(!/Okafor|Bello|Ade Tunde|K7M|OLDCODE|Maths|Eng\b/.test(pj), 'U: no names, codes, subjects or papers in the public copy');
+ok(r.j.setup.classes[0].hasOpen === true && r.j.setup.classes[1].hasOpen === false, 'U: the public copy says only whether a paper is open');
+r = await cU('GET', '/api/setup', null, { 'x-admin': B });
+ok(r.j.setup.pub === true && r.j.authFailed === true, 'U: a wrong passcode gets the public copy and is told it failed');
+r = await cU('GET', '/api/setup', null, { 'x-admin': A });
+ok(!r.j.setup.pub && r.j.setup.classes[0].code === 'K7M-2Q' && r.j.setup.classes[0].roster.length === 2 && !r.j.authFailed, 'U: the administrator gets the full setup');
+r = await cU('PUT', '/api/setup', { setup: { ...setupU, pub: true, classes: setupU.classes.map((c) => ({ ...c, locked: true, roster: [] })) }, baseStamp: 0, force: true }, { 'x-admin': A });
+ok(r.s === 400 && r.j.error === 'public_copy', 'U: a public copy can never overwrite the real setup');
+
+r = await cU('POST', '/api/unlock', { cid: 'b1', code: 'wrong' }, IP(1));
+ok(r.s === 401 && !JSON.stringify(r.j).includes('Okafor'), 'U: a wrong class code gets nothing');
+r = await cU('POST', '/api/unlock', { cid: 'b2', code: '' }, IP(1));
+ok(r.s === 401 && r.j.error === 'no_code', 'U: a class with no code cannot be opened');
+r = await cU('POST', '/api/unlock', { cid: 'b1', code: ' k7m-2q ' }, IP(2));
+const tokU = r.j.tok;
+ok(r.s === 200 && r.j.cls.roster.length === 2 && r.j.cls.exams.length === 1 && r.j.cls.exams[0].id === 'e1', 'U: the right code (any case) opens the class with its open papers only');
+ok(r.j.cls.code === undefined && r.j.cls.prevCodes === undefined && r.j.cls.armOf === undefined, 'U: the opened class carries no codes or arm data');
+for (let i = 0; i < 4; i++) await cU('POST', '/api/unlock', { cid: 'b1', code: 'g' + i }, IP(3));
+r = await cU('POST', '/api/unlock', { cid: 'b1', code: 'K7M-2Q' }, IP(3));
+ok(r.s === 429, 'U: too many wrong codes from one address locks that address, even for the right code');
+r = await cU('POST', '/api/unlock', { cid: 'b1', code: 'K7M-2Q' }, IP(4));
+ok(r.s === 200, 'U: other addresses are not affected');
+
+const rsU = (id, over = {}) => ({ id, cid: 'b1', eid: 'e1', name: 'Okafor Ngozi', subject: 'Maths', title: 'T', score: 3, total: 5, pct: 60, submittedAt: 1000, startedAt: 500, usedSec: 500, ...over });
+r = await cU('POST', '/api/result', { results: [rsU('u0000001')] }, IP(5));
+ok(r.j.rejected.length === 1 && r.j.rejected[0].reason === 'bad_token', 'U: a result with no token is refused');
+r = await cU('POST', '/api/result', { results: [rsU('u0000002', { tok: 'a'.repeat(64) })] }, IP(5));
+ok(r.j.rejected.length === 1 && r.j.rejected[0].reason === 'bad_token', 'U: a result with a made-up token is refused');
+r = await cU('POST', '/api/result', { results: [rsU('u0000003', { tok: tokU })] }, IP(5));
+ok(r.j.accepted.length === 1, 'U: a result with the class token is accepted');
+const oldTok = createHash('sha256').update('xd-tok:b1:oldcode').digest('hex');
+r = await cU('POST', '/api/result', { results: [rsU('u0000004', { tok: oldTok, name: 'Bello Amina' })] }, IP(5));
+ok(r.j.accepted.length === 1, 'U: a token from a previous code still lands (a code change never loses results)');
+let gU = await cU('GET', '/api/results?since=0', null, { 'x-admin': A });
+ok(gU.j.results.length === 2 && gU.j.results.every((x) => x.tok === undefined), 'U: the token is not kept with the stored result');
+for (let i = 0; i < 4; i++) await cU('POST', '/api/result', { results: [rsU('u00000' + (10 + i), { tok: 'b'.repeat(64) })] }, IP(6));
+r = await cU('POST', '/api/result', { results: [rsU('u0000020', { tok: tokU })] }, IP(6));
+ok(r.s === 429, 'U: guessing result tokens locks that address too');
+
+r = await cU('POST', '/api/reset-admin', { h2: C }, {});
+ok(r.s === 403, 'U: reset needs the vendor key');
+r = await cU('POST', '/api/reset-admin', { h2: C }, { 'x-vendor': 'wrong-key-wrong-key' });
+ok(r.s === 403, 'U: reset refuses a wrong vendor key');
+r = await cU('POST', '/api/reset-admin', { h2: 'nothex' }, V);
+ok(r.s === 400, 'U: reset refuses a malformed passcode');
+r = await cU('POST', '/api/reset-admin', { h2: C }, V);
+ok(r.s === 200 && r.j.ok, 'U: the vendor key resets the administrator passcode');
+r = await cU('POST', '/api/login', { h2: A });
+ok(r.s === 401, 'U: the old passcode stops working');
+r = await cU('POST', '/api/login', { h2: C });
+ok(r.s === 200 && r.j.role === 'admin', 'U: the new temporary passcode works');
+r = await cU('GET', '/api/setup', null, { 'x-admin': C });
+ok(!r.j.setup.pub && r.j.setup.classes[0].roster.length === 2, 'U: setup and results survive a reset');
+const o = await hU(new Request('http://x/api/reset-admin', { method: 'OPTIONS' }));
+ok(o.status === 204 && /POST/.test(o.headers.get('access-control-allow-methods')), 'U: the console can call reset from a browser');
+mem.clear();
+r = await cU('POST', '/api/reset-admin', { h2: C }, V);
+ok(r.s === 409 && r.j.error === 'not_claimed', 'U: an unclaimed site cannot be claimed by a reset');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
