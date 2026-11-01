@@ -379,7 +379,7 @@ const cU = async (method, path, body, headers = {}) => {
 const IP = (n) => ({ 'x-nf-client-connection-ip': '10.0.0.' + n });
 const ex1 = { id: 'e1', subject: 'Maths', title: 'T', open: true, questions: [{ q: 'x' }] }, ex2 = { id: 'e2', subject: 'Eng', title: 'T2', open: false, questions: [{ q: 'y' }] };
 const setupU = { v: 2, stamp: 0, school: 'S', adminHash: 'x', classes: [
-  { id: 'b1', name: 'Basic 1', hue: 1, code: 'K7M-2Q', prevCodes: ['OLDCODE'], roster: ['Okafor Ngozi', 'Bello Amina'], armOf: { 'Bello Amina': 'A' }, exams: [ex1, ex2] },
+  { id: 'b1', name: 'Basic 1', hue: 1, code: 'K7M-2Q', prevCodes: ['OLDCODE'], roster: ['Okafor Ngozi', 'Bello Amina'], armOf: { 'Bello Amina': 'A' }, kids: { 'okafor ngozi': { reg: 'REG/0001', tc: 'Private comment' } }, exams: [ex1, ex2] },
   { id: 'b2', name: 'Basic 2', hue: 2, code: '', roster: ['Ade Tunde'], exams: [] },
 ] };
 r = await cU('PUT', '/api/setup', { setup: setupU, baseStamp: 0 }, { 'x-admin': A });
@@ -404,6 +404,7 @@ r = await cU('POST', '/api/unlock', { cid: 'b1', code: ' k7m-2q ' }, IP(2));
 const tokU = r.j.tok;
 ok(r.s === 200 && r.j.cls.roster.length === 2 && r.j.cls.exams.length === 1 && r.j.cls.exams[0].id === 'e1', 'U: the right code (any case) opens the class with its open papers only');
 ok(r.j.cls.code === undefined && r.j.cls.prevCodes === undefined && r.j.cls.armOf === undefined, 'U: the opened class carries no codes or arm data');
+ok(r.j.cls.kids === undefined, 'U: the opened class carries no report-card comments or reg numbers');
 for (let i = 0; i < 4; i++) await cU('POST', '/api/unlock', { cid: 'b1', code: 'g' + i }, IP(3));
 r = await cU('POST', '/api/unlock', { cid: 'b1', code: 'K7M-2Q' }, IP(3));
 ok(r.s === 429, 'U: too many wrong codes from one address locks that address, even for the right code');

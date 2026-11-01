@@ -40,6 +40,11 @@ Papers can mix multiple choice, fill-in-the-blank and theory questions. In the e
 - **Theory:** a `Rubric: sunlight | carbon dioxide / CO2 | chlorophyll (2)` line lists the keywords.
 - Theory scores stay **Provisional** until a teacher confirms them in the **Marking** tab. Every change is kept with the marker\u2019s name and the time.
 
+## Report cards (Growth and above)
+1. Under each class's **Papers**, open a paper's settings and set **Counts on the report card as** (mid-term or end-of-term exam).
+2. Open the class's **Report cards** tab, fill **School details** once, add each child's photo, age, reg. no and comments.
+3. Pick the card type and press **Print** for one child or **Print the whole class**. Add the photos on the computer you print from.
+
 ## Setting up exam computers
 Sign in as examiner on each computer or tablet used for the test, open **Classes**, press **Set up this device for candidates**, then press **Lock**. Children on that device pick their name directly. Devices you have not set up ask for the class access code instead.
 

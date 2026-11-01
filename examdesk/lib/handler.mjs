@@ -174,7 +174,7 @@ export function makeHandler(store, opts = {}) {
   const clientIp = (req) => (req.headers.get('x-nf-client-connection-ip') || req.headers.get('cf-connecting-ip') || String(req.headers.get('x-forwarded-for') || '').split(',')[0] || 'x').trim().slice(0, 64);
   const tokOf = (cid, code) => sha('xd-tok:' + cid + ':' + nk(code));
   const stubClass = (c) => ({ id: c.id, name: c.name, hue: c.hue, locked: true, hasOpen: (c.exams || []).some((e) => e.open && (e.questions || []).length > 0), roster: [], exams: [] });
-  const candClass = (c) => { const o = { ...c, exams: (c.exams || []).filter((e) => e.open) }; delete o.code; delete o.prevCodes; delete o.armOf; return o; };
+  const candClass = (c) => { const o = { ...c, exams: (c.exams || []).filter((e) => e.open) }; delete o.code; delete o.prevCodes; delete o.armOf; delete o.kids; return o; };
   const publicView = (setup) => ({ ...setup, pub: true, classes: (setup.classes || []).map(stubClass) });
   const teacherView = (setup, t) => ({ ...setup, part: true, classes: (setup.classes || []).filter((c) => (t.form || []).some((f) => f.cid === c.id) || (t.subj || []).some((x) => x.cid === c.id)).map((c) => { const o = { ...c }; delete o.code; delete o.prevCodes; return o; }) });
   // wrong class codes are counted per network address (a whole school shares one, so the allowance is generous)
