@@ -610,6 +610,16 @@ var sha = async (s) => {
   const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
   return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("");
 };
+var pbk = async (h2, salt) => {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(h2), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: new TextEncoder().encode(salt), iterations: 1e5 }, key, 256);
+  return [...new Uint8Array(bits)].map((x) => x.toString(16).padStart(2, "0")).join("");
+};
+var hashPw = async (h2) => {
+  const salt = [...crypto.getRandomValues(new Uint8Array(16))].map((x) => x.toString(16).padStart(2, "0")).join("");
+  return "p1$" + salt + "$" + await pbk(h2, salt);
+};
+var isNewHash = (a) => typeof a === "string" && a.startsWith("p1$");
 var same = (a, b) => {
   if (a.length !== b.length) return false;
   let d = 0;
@@ -704,11 +714,19 @@ function makeHandler(store2, opts = {}) {
   const failDelay = opts.failDelayMs ?? 700;
   const json = (o, status = 200, extra = {}) => new Response(JSON.stringify(o), {
     status,
-    headers: { "content-type": "application/json", "cache-control": "no-store", ...extra }
+    headers: { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff", ...extra }
   });
   const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type,x-vendor", "access-control-allow-methods": "GET,PUT,POST,OPTIONS", "access-control-max-age": "600" };
   const jl = (o, status = 200) => json(o, status, CORS);
   const MAX_FAILS = opts.maxFails ?? 10, WINDOW_MS = opts.windowMs ?? 10 * 60 * 1e3, LOCK_MS = opts.lockMs ?? 5 * 60 * 1e3;
+  async function verifyPw(h2, auth) {
+    if (typeof h2 !== "string" || typeof auth !== "string" || !auth) return false;
+    if (isNewHash(auth)) {
+      const [, salt, hash] = auth.split("$");
+      return same(await pbk(h2, salt), hash);
+    }
+    return same(await sha(h2), auth);
+  }
   async function checkWith(auth, lockKey, h2) {
     if (!auth) return { ok: false, none: true };
     const now = Date.now();
@@ -719,9 +737,9 @@ function makeHandler(store2, opts = {}) {
       lock = {};
     }
     if (lock.until && lock.until > now) return { ok: false, locked: true };
-    if (typeof h2 === "string" && HEX64.test(h2) && same(await sha(h2), auth)) {
+    if (typeof h2 === "string" && HEX64.test(h2) && await verifyPw(h2, auth)) {
       if (lock.fails) await store2.set(lockKey, "{}");
-      return { ok: true };
+      return { ok: true, legacy: !isNewHash(auth) };
     }
     const fresh = lock.first && now - lock.first < WINDOW_MS;
     const fails = (fresh ? lock.fails || 0 : 0) + 1;
@@ -736,7 +754,9 @@ function makeHandler(store2, opts = {}) {
     return { ok: false };
   }
   async function checkAdmin(h2) {
-    return checkWith(await store2.get("auth"), "lock", h2);
+    const c = await checkWith(await store2.get("auth"), "lock", h2);
+    if (c.ok && c.legacy) await store2.set("auth", await hashPw(h2));
+    return c;
   }
   const vendorKey2 = typeof opts.vendorKey === "string" ? opts.vendorKey : "";
   const aiKey2 = typeof opts.aiKey === "string" ? opts.aiKey : "";
@@ -752,6 +772,13 @@ function makeHandler(store2, opts = {}) {
     const k = req.headers.get("x-vendor") || "";
     if (!vendorKey2 || vendorKey2.length < 16 || !k) return false;
     return same(await sha("xd-vendor:" + k), await sha("xd-vendor:" + vendorKey2));
+  }
+  async function upgradeTeacher(t, h2) {
+    const list = await getTeachers(), i = list.findIndex((x) => x.id === t.id);
+    if (i >= 0) {
+      list[i] = { ...list[i], auth: await hashPw(h2) };
+      await store2.set("teachers", JSON.stringify(list));
+    }
   }
   const bad = (c) => json({ ok: false, locked: !!c.locked }, c.locked ? 429 : 401);
   const RANK = { core: 0, growth: 1, campus: 2, max: 3 };
@@ -788,13 +815,30 @@ function makeHandler(store2, opts = {}) {
     if (!await growthOk()) return { ok: false };
     const t = (await getTeachers()).find((x) => x.id === uid);
     const c = await checkWith(t ? t.auth : "none", "lock:" + (t ? t.id : "unknown"), h2);
+    if (c.ok && t && c.legacy) await upgradeTeacher(t, h2);
     return c.ok && t ? { ok: true, role: "teacher", teacher: t } : { ok: false, locked: c.locked };
   }
   const clientIp = (req) => (req.headers.get("x-nf-client-connection-ip") || req.headers.get("cf-connecting-ip") || String(req.headers.get("x-forwarded-for") || "").split(",")[0] || "x").trim().slice(0, 64);
   const tokOf = (cid, code) => sha("xd-tok:" + cid + ":" + nk(code));
-  const stubClass = (c) => ({ id: c.id, name: c.name, hue: c.hue, locked: true, hasOpen: (c.exams || []).some((e) => e.open && (e.questions || []).length > 0), roster: [], exams: [] });
+  const PREP_MS = 12 * 3600 * 1e3;
+  const live = (e, now = Date.now()) => !!e.open && !(e.closesAt && now >= e.closesAt) && !(e.opensAt && e.opensAt - now > PREP_MS);
+  const stubClass = (c) => ({ id: c.id, name: c.name, hue: c.hue, locked: true, hasOpen: (c.exams || []).some((e) => live(e) && (e.questions || []).length > 0), roster: [], exams: [] });
+  const hideQ = (q) => {
+    const o = { ...q, hk: true };
+    delete o.expl;
+    delete o.explanation;
+    delete o.rubric;
+    const t = q.type || "obj";
+    if (t === "fib") o.answers = (q.answers || []).map(() => []);
+    else if (t !== "theory") {
+      o.multi = (q.options || []).filter((x) => x.c).length > 1;
+      o.options = (q.options || []).map((x) => ({ t: x.t }));
+    }
+    return o;
+  };
+  const candExam = (e) => e.hideKey ? { ...e, hk: true, questions: (e.questions || []).map(hideQ) } : e;
   const candClass = (c) => {
-    const o = { ...c, exams: (c.exams || []).filter((e) => e.open) };
+    const o = { ...c, exams: (c.exams || []).filter((e) => live(e)).map(candExam) };
     delete o.code;
     delete o.prevCodes;
     delete o.armOf;
@@ -883,7 +927,7 @@ function makeHandler(store2, opts = {}) {
             if (!view) view = publicView(setup);
           }
         }
-        return json({ kind: "xd-srv", v: 1, hasAdmin, setup: view, authFailed, ai: !!aiKey2, licence: licView(await getLicence(), setup, Date.now()) });
+        return json({ kind: "xd-srv", v: 1, hasAdmin, setup: view, authFailed, needClaim: !hasAdmin && !!(await getLicence() || {}).claim, ai: !!aiKey2, licence: licView(await getLicence(), setup, Date.now()) });
       }
       if (path === "/api/unlock" && req.method === "POST") {
         const ik = await ipKey(req);
@@ -908,7 +952,7 @@ function makeHandler(store2, opts = {}) {
         const b = await req.json();
         if (!b || typeof b.h2 !== "string" || !HEX64.test(b.h2)) return jl({ ok: false, error: "bad" }, 400);
         if (!await store2.get("auth")) return jl({ ok: false, error: "not_claimed" }, 409);
-        await store2.set("auth", await sha(b.h2));
+        await store2.set("auth", await hashPw(b.h2));
         await store2.set("lock", "{}");
         return jl({ ok: true });
       }
@@ -948,7 +992,8 @@ function makeHandler(store2, opts = {}) {
           school: String(b.school || "").slice(0, 120),
           updatedAt: Date.now(),
           genUsed: b.newTerm === true ? 0 : prev && prev.genUsed || 0,
-          genExtra: (prev && prev.genExtra || 0) + addGens
+          genExtra: (prev && prev.genExtra || 0) + addGens,
+          claim: typeof b.claimCode === "string" && b.claimCode.trim().length >= 6 ? await sha("xd-claim:" + nk(b.claimCode)) : b.claimCode === "" ? "" : prev && prev.claim || ""
         };
         await store2.set("licence", JSON.stringify(lic));
         const raw = await store2.get("setup");
@@ -963,6 +1008,7 @@ function makeHandler(store2, opts = {}) {
           }
           const t = (await getTeachers()).find((x) => nk(x.name) === nk(user));
           const c2 = await checkWith(t ? t.auth : "none", "lock:" + (t ? t.id : "unknown"), h2);
+          if (c2.ok && t && c2.legacy) await upgradeTeacher(t, h2);
           return c2.ok && t ? json({ ok: true, role: "teacher", teacher: pubTeacher(t) }) : c2.locked ? bad(c2) : json({ ok: false }, 401);
         }
         const c = await checkAdmin(h2);
@@ -973,7 +1019,7 @@ function makeHandler(store2, opts = {}) {
         const c = await checkAdmin(h2);
         if (!c.ok) return bad(c);
         if (typeof newAuth !== "string" || !HEX64.test(newAuth)) return json({ ok: false, error: "bad" }, 400);
-        await store2.set("auth", await sha(newAuth));
+        await store2.set("auth", await hashPw(newAuth));
         return json({ ok: true });
       }
       if (path === "/api/setup" && req.method === "PUT") {
@@ -1001,7 +1047,17 @@ function makeHandler(store2, opts = {}) {
         const auth = await store2.get("auth");
         if (!auth) {
           if (!HEX64.test(h2)) return json({ ok: false, error: "bad" }, 400);
-          await store2.set("auth", await sha(h2));
+          if (lic && lic.claim) {
+            const given = req.headers.get("x-claim") || "";
+            const ik = await ipKey(req);
+            if (await ipLocked(ik)) return json({ ok: false, locked: true }, 429);
+            if (!given || !same(await sha("xd-claim:" + nk(given)), lic.claim)) {
+              await ipFail(ik);
+              await sleep2(failDelay);
+              return json({ ok: false, error: "claim_needed" }, 403);
+            }
+          }
+          await store2.set("auth", await hashPw(h2));
         } else {
           const c = await checkAdmin(h2);
           if (!c.ok) return bad(c);
@@ -1224,10 +1280,11 @@ function makeHandler(store2, opts = {}) {
           let auth = prev ? prev.auth : "";
           if (t.h2 !== void 0 && t.h2 !== "") {
             if (typeof t.h2 !== "string" || !HEX64.test(t.h2)) return json({ ok: false, error: "bad_passcode", name }, 400);
-            auth = await sha(t.h2);
+            auth = await hashPw(t.h2);
+            if (await verifyPw(t.h2, await store2.get("auth"))) return json({ ok: false, error: "same_as_admin", name }, 400);
           }
           if (!auth) return json({ ok: false, error: "passcode_needed", name }, 400);
-          if (auth === await store2.get("auth")) return json({ ok: false, error: "same_as_admin", name }, 400);
+          if (auth === await store2.get("auth") && !isNewHash(auth)) return json({ ok: false, error: "same_as_admin", name }, 400);
           const id = prev ? prev.id : "tc" + [...crypto.getRandomValues(new Uint8Array(8))].map((x) => x.toString(16).padStart(2, "0")).join("");
           const form = (Array.isArray(t.form) ? t.form : []).slice(0, 100).map((f) => ({ cid: str(f && f.cid, 64), arm: str(f && f.arm, 40) })).filter((f) => f.cid);
           const subj = (Array.isArray(t.subj) ? t.subj : []).slice(0, 300).map((x) => ({ cid: str(x && x.cid, 64), subject: str(x && x.subject, 80) })).filter((x) => x.cid && x.subject);

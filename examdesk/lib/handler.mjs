@@ -10,6 +10,17 @@ const sha = async (s) => {
   const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
   return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join('');
 };
+// Stored passcodes are salted and stretched (PBKDF2, 100,000 rounds). Older sites stored a plain SHA-256; those still work and are upgraded on the next successful sign-in.
+const pbk = async (h2, salt) => {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(h2), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: new TextEncoder().encode(salt), iterations: 100000 }, key, 256);
+  return [...new Uint8Array(bits)].map((x) => x.toString(16).padStart(2, '0')).join('');
+};
+const hashPw = async (h2) => {
+  const salt = [...crypto.getRandomValues(new Uint8Array(16))].map((x) => x.toString(16).padStart(2, '0')).join('');
+  return 'p1$' + salt + '$' + (await pbk(h2, salt));
+};
+const isNewHash = (a) => typeof a === 'string' && a.startsWith('p1$');
 const same = (a, b) => {
   if (a.length !== b.length) return false;
   let d = 0;
@@ -108,7 +119,7 @@ export function makeHandler(store, opts = {}) {
   const json = (o, status = 200, extra = {}) =>
     new Response(JSON.stringify(o), {
       status,
-      headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...extra },
+      headers: { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...extra },
     });
   // The licence address may be called from the vendor console (a page opened from your own PC). Changing anything still needs the vendor key.
   const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type,x-vendor', 'access-control-allow-methods': 'GET,PUT,POST,OPTIONS', 'access-control-max-age': '600' };
@@ -116,15 +127,20 @@ export function makeHandler(store, opts = {}) {
 
   // Wrong guesses slow down, and after MAX_FAILS inside the window the passcode is locked for LOCK_MS.
   const MAX_FAILS = opts.maxFails ?? 10, WINDOW_MS = opts.windowMs ?? 10 * 60 * 1000, LOCK_MS = opts.lockMs ?? 5 * 60 * 1000;
+  async function verifyPw(h2, auth) {
+    if (typeof h2 !== 'string' || typeof auth !== 'string' || !auth) return false;
+    if (isNewHash(auth)) { const [, salt, hash] = auth.split('$'); return same(await pbk(h2, salt), hash); }
+    return same(await sha(h2), auth);
+  }
   async function checkWith(auth, lockKey, h2) {
     if (!auth) return { ok: false, none: true };
     const now = Date.now();
     let lock = {};
     try { lock = JSON.parse((await store.get(lockKey)) || '{}'); } catch (e) { lock = {}; }
     if (lock.until && lock.until > now) return { ok: false, locked: true };
-    if (typeof h2 === 'string' && HEX64.test(h2) && same(await sha(h2), auth)) {
+    if (typeof h2 === 'string' && HEX64.test(h2) && (await verifyPw(h2, auth))) {
       if (lock.fails) await store.set(lockKey, '{}');
-      return { ok: true };
+      return { ok: true, legacy: !isNewHash(auth) };
     }
     const fresh = lock.first && now - lock.first < WINDOW_MS;
     const fails = (fresh ? lock.fails || 0 : 0) + 1;
@@ -134,7 +150,11 @@ export function makeHandler(store, opts = {}) {
     await sleep(failDelay);
     return { ok: false };
   }
-  async function checkAdmin(h2) { return checkWith(await store.get('auth'), 'lock', h2); }
+  async function checkAdmin(h2) {
+    const c = await checkWith(await store.get('auth'), 'lock', h2);
+    if (c.ok && c.legacy) await store.set('auth', await hashPw(h2));
+    return c;
+  }
   const vendorKey = typeof opts.vendorKey === 'string' ? opts.vendorKey : '';
   const aiKey = typeof opts.aiKey === 'string' ? opts.aiKey : '';
   const aiModel = opts.aiModel || 'claude-sonnet-5-5', aiFetch = opts.aiFetch || ((...a) => fetch(...a)), aiTimeout = opts.aiTimeoutMs ?? 24000;
@@ -145,6 +165,10 @@ export function makeHandler(store, opts = {}) {
     const k = req.headers.get('x-vendor') || '';
     if (!vendorKey || vendorKey.length < 16 || !k) return false;
     return same(await sha('xd-vendor:' + k), await sha('xd-vendor:' + vendorKey));
+  }
+  async function upgradeTeacher(t, h2) {
+    const list = await getTeachers(), i = list.findIndex((x) => x.id === t.id);
+    if (i >= 0) { list[i] = { ...list[i], auth: await hashPw(h2) }; await store.set('teachers', JSON.stringify(list)); }
   }
   const bad = (c) => json({ ok: false, locked: !!c.locked }, c.locked ? 429 : 401);
 
@@ -168,13 +192,27 @@ export function makeHandler(store, opts = {}) {
     if (!(await growthOk())) return { ok: false };
     const t = (await getTeachers()).find((x) => x.id === uid);
     const c = await checkWith(t ? t.auth : 'none', 'lock:' + (t ? t.id : 'unknown'), h2);
+    if (c.ok && t && c.legacy) await upgradeTeacher(t, h2);
     return c.ok && t ? { ok: true, role: 'teacher', teacher: t } : { ok: false, locked: c.locked };
   }
   // ---- class lists are not public. The page only learns class names until a class access code unlocks that one class.
   const clientIp = (req) => (req.headers.get('x-nf-client-connection-ip') || req.headers.get('cf-connecting-ip') || String(req.headers.get('x-forwarded-for') || '').split(',')[0] || 'x').trim().slice(0, 64);
   const tokOf = (cid, code) => sha('xd-tok:' + cid + ':' + nk(code));
-  const stubClass = (c) => ({ id: c.id, name: c.name, hue: c.hue, locked: true, hasOpen: (c.exams || []).some((e) => e.open && (e.questions || []).length > 0), roster: [], exams: [] });
-  const candClass = (c) => { const o = { ...c, exams: (c.exams || []).filter((e) => e.open) }; delete o.code; delete o.prevCodes; delete o.armOf; delete o.kids; return o; };
+  // a paper that is switched on is sent to devices from 12 hours before its opening time to its closing time; the device itself keeps it shut until the opening time
+  const PREP_MS = 12 * 3600 * 1000;
+  const live = (e, now = Date.now()) => !!e.open && !(e.closesAt && now >= e.closesAt) && !(e.opensAt && e.opensAt - now > PREP_MS);
+  const stubClass = (c) => ({ id: c.id, name: c.name, hue: c.hue, locked: true, hasOpen: (c.exams || []).some((e) => live(e) && (e.questions || []).length > 0), roster: [], exams: [] });
+  // a paper marked "keep the answers off devices" is sent without its key; the teacher's side marks it
+  const hideQ = (q) => {
+    const o = { ...q, hk: true };
+    delete o.expl; delete o.explanation; delete o.rubric;
+    const t = q.type || 'obj';
+    if (t === 'fib') o.answers = (q.answers || []).map(() => []);
+    else if (t !== 'theory') { o.multi = (q.options || []).filter((x) => x.c).length > 1; o.options = (q.options || []).map((x) => ({ t: x.t })); }
+    return o;
+  };
+  const candExam = (e) => (e.hideKey ? { ...e, hk: true, questions: (e.questions || []).map(hideQ) } : e);
+  const candClass = (c) => { const o = { ...c, exams: (c.exams || []).filter((e) => live(e)).map(candExam) }; delete o.code; delete o.prevCodes; delete o.armOf; delete o.kids; return o; };
   const publicView = (setup) => ({ ...setup, pub: true, classes: (setup.classes || []).map(stubClass) });
   const teacherView = (setup, t) => ({ ...setup, part: true, classes: (setup.classes || []).filter((c) => (t.form || []).some((f) => f.cid === c.id) || (t.subj || []).some((x) => x.cid === c.id)).map((c) => { const o = { ...c }; delete o.code; delete o.prevCodes; return o; }) });
   // wrong class codes are counted per network address (a whole school shares one, so the allowance is generous)
@@ -234,7 +272,7 @@ export function makeHandler(store, opts = {}) {
             if (!view) view = publicView(setup);
           }
         }
-        return json({ kind: 'xd-srv', v: 1, hasAdmin, setup: view, authFailed, ai: !!aiKey, licence: licView(await getLicence(), setup, Date.now()) });
+        return json({ kind: 'xd-srv', v: 1, hasAdmin, setup: view, authFailed, needClaim: !hasAdmin && !!((await getLicence()) || {}).claim, ai: !!aiKey, licence: licView(await getLicence(), setup, Date.now()) });
       }
 
       // A child opens one class by typing its access code. Wrong guesses are counted and slowed.
@@ -261,7 +299,7 @@ export function makeHandler(store, opts = {}) {
         const b = await req.json();
         if (!b || typeof b.h2 !== 'string' || !HEX64.test(b.h2)) return jl({ ok: false, error: 'bad' }, 400);
         if (!(await store.get('auth'))) return jl({ ok: false, error: 'not_claimed' }, 409);
-        await store.set('auth', await sha(b.h2));
+        await store.set('auth', await hashPw(b.h2));
         await store.set('lock', '{}');
         return jl({ ok: true });
       }
@@ -293,7 +331,8 @@ export function makeHandler(store, opts = {}) {
         const addGens = b.addGens == null ? 0 : b.addGens;
         if (!Number.isInteger(addGens) || addGens < 0 || addGens > 100000) return jl({ ok: false, error: 'bad_gens' }, 400);
         const lic = { plan, cap, paidUntil, graceDays, enforce, state, school: String(b.school || '').slice(0, 120), updatedAt: Date.now(),
-          genUsed: b.newTerm === true ? 0 : (prev && prev.genUsed) || 0, genExtra: ((prev && prev.genExtra) || 0) + addGens };
+          genUsed: b.newTerm === true ? 0 : (prev && prev.genUsed) || 0, genExtra: ((prev && prev.genExtra) || 0) + addGens,
+          claim: typeof b.claimCode === 'string' && b.claimCode.trim().length >= 6 ? await sha('xd-claim:' + nk(b.claimCode)) : (b.claimCode === '' ? '' : (prev && prev.claim) || '') };
         await store.set('licence', JSON.stringify(lic));
         const raw = await store.get('setup');
         return jl({ ok: true, ai: !!aiKey, licence: licView(lic, raw ? JSON.parse(raw) : null, Date.now()) });
@@ -305,6 +344,7 @@ export function makeHandler(store, opts = {}) {
           if (!(await growthOk())) { await sleep(failDelay); return json({ ok: false }, 401); }
           const t = (await getTeachers()).find((x) => nk(x.name) === nk(user));
           const c = await checkWith(t ? t.auth : 'none', 'lock:' + (t ? t.id : 'unknown'), h2);
+          if (c.ok && t && c.legacy) await upgradeTeacher(t, h2);
           return c.ok && t ? json({ ok: true, role: 'teacher', teacher: pubTeacher(t) }) : c.locked ? bad(c) : json({ ok: false }, 401);
         }
         const c = await checkAdmin(h2);
@@ -316,7 +356,7 @@ export function makeHandler(store, opts = {}) {
         const c = await checkAdmin(h2);
         if (!c.ok) return bad(c);
         if (typeof newAuth !== 'string' || !HEX64.test(newAuth)) return json({ ok: false, error: 'bad' }, 400);
-        await store.set('auth', await sha(newAuth));
+        await store.set('auth', await hashPw(newAuth));
         return json({ ok: true });
       }
 
@@ -348,7 +388,14 @@ export function makeHandler(store, opts = {}) {
         if (!auth) {
           // first save claims the site for whoever holds this passcode
           if (!HEX64.test(h2)) return json({ ok: false, error: 'bad' }, 400);
-          await store.set('auth', await sha(h2));
+          // when the supplier issued a set-up code for this site, only someone holding it can claim it
+          if (lic && lic.claim) {
+            const given = req.headers.get('x-claim') || '';
+            const ik = await ipKey(req);
+            if (await ipLocked(ik)) return json({ ok: false, locked: true }, 429);
+            if (!given || !same(await sha('xd-claim:' + nk(given)), lic.claim)) { await ipFail(ik); await sleep(failDelay); return json({ ok: false, error: 'claim_needed' }, 403); }
+          }
+          await store.set('auth', await hashPw(h2));
         } else {
           const c = await checkAdmin(h2);
           if (!c.ok) return bad(c);
@@ -542,10 +589,11 @@ export function makeHandler(store, opts = {}) {
           let auth = prev ? prev.auth : '';
           if (t.h2 !== undefined && t.h2 !== '') {
             if (typeof t.h2 !== 'string' || !HEX64.test(t.h2)) return json({ ok: false, error: 'bad_passcode', name }, 400);
-            auth = await sha(t.h2);
+            auth = await hashPw(t.h2);
+            if (await verifyPw(t.h2, await store.get('auth'))) return json({ ok: false, error: 'same_as_admin', name }, 400);
           }
           if (!auth) return json({ ok: false, error: 'passcode_needed', name }, 400);
-          if (auth === (await store.get('auth'))) return json({ ok: false, error: 'same_as_admin', name }, 400);
+          if (auth === (await store.get('auth')) && !isNewHash(auth)) return json({ ok: false, error: 'same_as_admin', name }, 400);
           const id = prev ? prev.id : 'tc' + [...crypto.getRandomValues(new Uint8Array(8))].map((x) => x.toString(16).padStart(2, '0')).join('');
           const form = (Array.isArray(t.form) ? t.form : []).slice(0, 100).map((f) => ({ cid: str(f && f.cid, 64), arm: str(f && f.arm, 40) })).filter((f) => f.cid);
           const subj = (Array.isArray(t.subj) ? t.subj : []).slice(0, 300).map((x) => ({ cid: str(x && x.cid, 64), subject: str(x && x.subject, 80) })).filter((x) => x.cid && x.subject);

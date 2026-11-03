@@ -5,5 +5,5 @@ rmSync('netlify-upload', { recursive: true, force: true });
 mkdirSync('netlify-upload/netlify/functions', { recursive: true });
 for (const f of readdirSync('public')) cpSync('public/' + f, 'netlify-upload/' + f, { recursive: true });
 await build({ entryPoints: ['netlify/functions/api.mjs'], bundle: true, format: 'esm', platform: 'node', target: 'node20', outfile: 'netlify-upload/netlify/functions/api.mjs', logLevel: 'error' });
-writeFileSync('netlify-upload/netlify.toml', '[build]\n  publish = "."\n  functions = "netlify/functions"\n\n[[headers]]\n  for = "/sw.js"\n  [headers.values]\n    Cache-Control = "no-cache"\n\n[[headers]]\n  for = "/index.html"\n  [headers.values]\n    Cache-Control = "no-cache"\n');
+writeFileSync('netlify-upload/netlify.toml', '[build]\n  publish = "."\n  functions = "netlify/functions"\n\n[[headers]]\n  for = "/sw.js"\n  [headers.values]\n    Cache-Control = "no-cache"\n\n[[headers]]\n  for = "/index.html"\n  [headers.values]\n    Cache-Control = "no-cache"\n\n[[headers]]\n  for = "/*"\n  [headers.values]\n    X-Content-Type-Options = "nosniff"\n    Referrer-Policy = "no-referrer"\n    X-Frame-Options = "SAMEORIGIN"\n    Permissions-Policy = "camera=(), microphone=(), geolocation=()"\n');
 console.log('netlify-upload/ ready:', readdirSync('netlify-upload').join(', '));

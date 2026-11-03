@@ -156,6 +156,7 @@ function detail(){
   '<div class="row"><div><label>Paid until</label><input id="paid" type="date" value="'+iso(def.paidUntil)+'"></div><div><label>&nbsp;</label><button class="btn" id="plus" type="button">+ 1 term (about 3 months)</button></div></div>'+
   '<div class="row"><div><label>Add AI generations (bought packs)</label><select id="addg"><option value="0">None</option><option value="100">+100</option><option value="200">+200</option><option value="500">+500</option></select></div><div><label>&nbsp;</label><label class="row tight" style="font-weight:400"><input type="checkbox" id="nt"> Start a new term (resets the term’s AI allowance)</label></div></div>'+
   (has&&L.gen?'<div class="mut" style="font-size:12.5px;margin:-4px 0 8px">AI questions: <b>'+L.gen.left+'</b> left ('+(L.gen.allow-Math.min(L.gen.used,L.gen.allow))+' of '+L.gen.allow+' this term, plus '+L.gen.extra+' bought). AI key on the site: <b>'+((live[s.id]||{}).ai?'set':'not set')+'</b>'+((live[s.id]||{}).ai?'':' (add XD_AI_KEY in Netlify, then redeploy)')+'</div>':'')+
+  '<div class="row"><div><label>Set-up code (needed once, to claim a brand-new site)</label><input id="claim" type="text" placeholder="leave blank to keep as is" autocomplete="off"></div><div><button class="btn" id="claimgen" type="button">Make one</button></div></div>'+
   '<div class="row"><div><label>Grace days after due</label><input id="grace" type="number" min="0" max="90" value="'+(def.graceDays==null?14:def.graceDays)+'"></div><div><label>Over the cap</label><select id="enf"><option value="block"'+(def.enforce!=='warn'?' selected':'')+'>Block adding children</option><option value="warn"'+(def.enforce==='warn'?' selected':'')+'>Warn only</option></select></div></div>'+
   '<label>Your vendor key</label><input id="key" type="password" autocomplete="off" value="'+esc(keys[s.id]||sess[s.id]||'')+'"><label class="row tight" style="font-weight:400;margin-top:6px"><input type="checkbox" id="rem"'+(keys[s.id]?' checked':'')+'> Remember on this PC</label>'+
   '<div class="row tight" style="margin-top:10px"><button class="btn p" id="save">Save licence</button><button class="btn" id="re">Refresh</button></div>'+
@@ -180,9 +181,11 @@ function detail(){
     const paid=new Date(q('paid').value+'T23:59:59').getTime();
     if(!Number.isFinite(paid)){setNote(s,'err','Choose a paid-until date.');return;}
     const body={plan:q('plan').value,cap:parseInt(q('cap').value,10),paidUntil:paid,graceDays:parseInt(q('grace').value,10),enforce:q('enf').value,school:s.name};
+    const cl=q('claim').value.trim();if(cl){if(cl.length<6){setNote(s,'err','The set-up code needs at least 6 characters.');return;}body.claimCode=cl;}
     const ag=parseInt(q('addg').value,10)||0,nt=q('nt').checked;if(ag)body.addGens=ag;if(nt)body.newTerm=true;
     await put(s,body,key,'Saved: '+PLAN[body.plan][0]+', cap '+body.cap+', paid until '+fd(paid)+(ag?', +'+ag+' AI generations':'')+(nt?', new term':''));
   };
+  if(q('claimgen'))q('claimgen').onclick=()=>{const al='ABCDEFGHJKMNPQRSTUVWXYZ23456789';let o='';const a=crypto.getRandomValues(new Uint8Array(8));for(const x of a)o+=al[x%al.length];q('claim').value=o;};
   if(q('tmpdone'))q('tmpdone').onclick=()=>{delete reveal[s.id];draw();};
   if(q('resetadm'))q('resetadm').onclick=async()=>{
     const key=getKey();if(!key)return;

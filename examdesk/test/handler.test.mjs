@@ -581,5 +581,83 @@ ok(r.s === 402, 'B: a suspended school cannot change the bank');
 r = await cA(hAI, 'GET', '/api/bank', null, { 'x-admin': A });
 ok(r.s === 200, 'B: a suspended school can still read the bank');
 
+
+// ---- K: a paper can keep its answer key off pupils' devices
+{
+  const mem = new Map();
+  const st = { get: async (k) => mem.get(k) ?? null, set: async (k, v) => void mem.set(k, v), delete: async (k) => void mem.delete(k), list: async (p) => [...mem.keys()].filter((k) => k.startsWith(p)).sort() };
+  const hK = makeHandler(st, { failDelayMs: 1 });
+  const cK = async (method, path, body, headers = {}) => { const r = await hK(new Request('http://x' + path, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'content-type': 'application/json', ...headers } })); return { s: r.status, j: await r.json() }; };
+  const qs = [
+    { type: 'obj', text: 'Two answers?', marks: 2, options: [{ t: 'one', c: true }, { t: 'two', c: true }, { t: 'three', c: false }], expl: 'SECRETEXPL' },
+    { type: 'fib', text: 'Capital?', marks: 1, answers: [['SECRETABUJA']] },
+    { type: 'theory', text: 'Explain', marks: 5, rubric: [{ kw: 'SECRETKW', m: 1 }] },
+  ];
+  const sK = { v: 2, stamp: 0, school: 'S', adminHash: 'x', classes: [{ id: 'b1', name: 'B1', code: 'AB12CD', roster: ['Okafor Ngozi'], exams: [
+    { id: 'e1', subject: 'M', title: 'Hidden', open: true, hideKey: true, questions: qs },
+    { id: 'e2', subject: 'E', title: 'Normal', open: true, questions: qs }] }] };
+  await cK('PUT', '/api/setup', { setup: sK, baseStamp: 0 }, { 'x-admin': A });
+  const u = await cK('POST', '/api/unlock', { cid: 'b1', code: 'AB12CD' }, IP(77));
+  const [e1, e2] = u.j.cls.exams;
+  const j1 = JSON.stringify(e1);
+  ok(e1.hk === true && !/SECRET/.test(j1) && !/"c":true/.test(j1), 'K: a hidden-key paper reaches the pupil with no answers, explanations or marking points');
+  ok(e1.questions[0].multi === true && e1.questions[0].options.length === 3 && e1.questions[1].answers.length === 1 && e1.questions[0].marks === 2, 'K: it still says how many boxes to tick, how many blanks and the marks');
+  ok(!e2.hk && /SECRETABUJA/.test(JSON.stringify(e2)), 'K: a normal paper is unchanged');
+  const adm = await cK('GET', '/api/setup', null, { 'x-admin': A });
+  ok(/SECRETABUJA/.test(JSON.stringify(adm.j.setup)) && adm.j.setup.classes[0].exams[0].hideKey === true, 'K: the administrator still has the key and the setting');
+}
+
+
+// ---- N: set-up code and stored passcodes
+{
+  const mem = new Map();
+  const st = { get: async (k) => mem.get(k) ?? null, set: async (k, v) => void mem.set(k, v), delete: async (k) => void mem.delete(k), list: async (p) => [...mem.keys()].filter((k) => k.startsWith(p)).sort() };
+  const hN = makeHandler(st, { failDelayMs: 1, vendorKey: VK });
+  const cN = async (method, path, body, headers = {}) => { const r = await hN(new Request('http://x' + path, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'content-type': 'application/json', ...headers } })); return { s: r.status, j: await r.json() }; };
+  await cN('PUT', '/api/licence', { plan: 'growth', cap: 500, paidUntil: Date.now() + 90 * 86400000, claimCode: 'Set-Me-77' }, V);
+  let r = await cN('GET', '/api/setup');
+  ok(r.j.needClaim === true, 'N: an unclaimed site with a set-up code says so');
+  r = await cN('PUT', '/api/setup', { setup: setup('S'), baseStamp: 0 }, { 'x-admin': A });
+  ok(r.s === 403 && r.j.error === 'claim_needed' && !mem.get('auth'), 'N: nobody can claim it without the code');
+  r = await cN('PUT', '/api/setup', { setup: setup('S'), baseStamp: 0 }, { 'x-admin': A, 'x-claim': 'wrong-code' });
+  ok(r.s === 403 && !mem.get('auth'), 'N: a wrong set-up code does not claim it');
+  r = await cN('PUT', '/api/setup', { setup: setup('S'), baseStamp: 0 }, { 'x-admin': A, 'x-claim': ' set-me-77 ' });
+  ok(r.s === 200 && mem.get('auth'), 'N: the right code (any case) claims it');
+  ok(/^p1\$[0-9a-f]{32}\$[0-9a-f]{64}$/.test(mem.get('auth')) && !mem.get('auth').includes(sha(A)), 'N: the passcode is stored salted and stretched, not as a plain hash');
+  r = await cN('GET', '/api/setup');
+  ok(r.j.needClaim === false, 'N: once claimed the code is no longer asked for');
+  r = await cN('POST', '/api/login', { h2: A });
+  ok(r.s === 200 && r.j.role === 'admin', 'N: signing in works with the new hash');
+  r = await cN('POST', '/api/login', { h2: B });
+  ok(r.s === 401, 'N: a wrong passcode is refused');
+  mem.set('auth', sha(A));
+  r = await cN('POST', '/api/login', { h2: A });
+  ok(r.s === 200 && /^p1\$/.test(mem.get('auth')), 'N: an old plain-hash passcode signs in and is upgraded');
+  r = await cN('POST', '/api/login', { h2: A });
+  ok(r.s === 200, 'N: and still works after the upgrade');
+}
+
+
+// ---- S: scheduled papers
+{
+  const mem = new Map();
+  const st = { get: async (k) => mem.get(k) ?? null, set: async (k, v) => void mem.set(k, v), delete: async (k) => void mem.delete(k), list: async (p) => [...mem.keys()].filter((k) => k.startsWith(p)).sort() };
+  const hS = makeHandler(st, { failDelayMs: 1 });
+  const cS = async (method, path, body, headers = {}) => { const r = await hS(new Request('http://x' + path, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'content-type': 'application/json', ...headers } })); return { s: r.status, j: await r.json() }; };
+  const now = Date.now(), H = 3600 * 1000;
+  const q = [{ type: 'obj', text: 'Q', marks: 1, options: [{ t: 'a', c: true }, { t: 'b', c: false }] }];
+  const mkE = (id, o) => ({ id, subject: id, title: id, open: true, questions: q, ...o });
+  const sS = { v: 2, stamp: 0, school: 'S', adminHash: 'x', classes: [{ id: 'b1', name: 'B1', code: 'AB12CD', roster: ['Okafor Ngozi'], exams: [
+    mkE('now'), mkE('soon', { opensAt: now + 2 * H }), mkE('far', { opensAt: now + 30 * H }), mkE('ended', { closesAt: now - H }), mkE('window', { opensAt: now - H, closesAt: now + H }), mkE('off', { open: false, opensAt: now - H })] }] };
+  await cS('PUT', '/api/setup', { setup: sS, baseStamp: 0 }, { 'x-admin': A });
+  const u = await cS('POST', '/api/unlock', { cid: 'b1', code: 'AB12CD' }, IP(88));
+  const ids = u.j.cls.exams.map((e) => e.id).sort().join(',');
+  ok(ids === 'now,soon,window', 'S: devices get papers that are open or open within 12 hours; not far-off, ended or switched-off ones: ' + ids);
+  const e = u.j.cls.exams.find((x) => x.id === 'soon');
+  ok(e.opensAt === now + 2 * H, 'S: the opening time travels with the paper');
+  const pub = await cS('GET', '/api/setup');
+  ok(pub.j.setup.classes[0].hasOpen === true, 'S: the class shows as having an open paper');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

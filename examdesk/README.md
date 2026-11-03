@@ -142,3 +142,12 @@ Add a LICENSE file before publishing. (MIT lets anyone reuse it freely. AGPL req
 4. Check a school: `node tools/set-licence.mjs https://SITE.netlify.app`.
 
 Rules: over the student cap or past the paid-until date plus 14 grace days, the school cannot save setup changes. Sittings and result submissions are never blocked. Without a licence record the site runs unlimited (for your own testing).
+
+## Scheduled papers
+In a paper's card, set **Opens at** and/or **Closes at**, then switch the paper on. Leave a time blank for no limit.
+
+## Keeping answers off children's devices
+Tick **Keep the answers off the children's devices** in a paper's settings. Children see only "Test submitted"; you see the marks after results reach the server.
+
+## Set-up code (vendor)
+In the vendor console, give a site a **Set-up code** (Make one). The school types it once when it first saves to the server.

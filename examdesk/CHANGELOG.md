@@ -1,3 +1,12 @@
+## Scheduled papers, blank papers, answer keys off devices, tighter security
+- **Scheduled papers.** Each paper can have an *Opens at* and *Closes at* time. Switch the paper on, set the times, and it opens and closes itself. Devices receive the paper up to 12 hours early (so a device prepared the evening before works) but keep it shut until the opening time. A child already writing when it closes may finish.
+- **Blank question paper and teacher's copy** (Growth and above): Report cards tab → Printouts for a paper. Same layout as the answer script; the teacher's copy marks the right answers.
+- **Class position on report cards** is its own tick-box on the Report cards tab.
+- **Keep the answers off children's devices** (per-paper setting). The pupil's device never receives the key, explanations or marking points. The pupil sees "Test submitted"; the score appears on the teacher's side once the answers reach the server. Needs the school server; on a site with no server the key is on the device as before.
+- **Stored passcodes are salted and stretched** (PBKDF2, 100,000 rounds). Sites on older plain hashes upgrade automatically at the next sign-in.
+- **Set-up code.** In the vendor console a site can be given a set-up code; the first save of a brand-new site must carry it, so a stranger who finds the link first cannot claim the site.
+- **Security headers** on every page (no sniffing, no framing, no referrer, no camera/mic/location). API replies are never cached.
+
 ## Report cards (Growth and above)
 - New **Report cards** tab on each class. Prints a mid-term card (score out of 40) or an end-of-term card (mid-term out of 40 + end-term exam out of 60 = total out of 100, with grade and remark), one page per child, or the whole class at once. Use the browser's Print, or choose Save as PDF.
 - In each paper's settings choose **Counts on the report card as** mid-term or end-of-term exam. Papers of the same subject combine; a child's total and average only appear once every subject has a mark; unconfirmed (provisional) marks are starred.
