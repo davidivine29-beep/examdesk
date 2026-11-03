@@ -20,6 +20,28 @@ const hashPw = async (h2) => {
   const salt = [...crypto.getRandomValues(new Uint8Array(16))].map((x) => x.toString(16).padStart(2, '0')).join('');
   return 'p1$' + salt + '$' + (await pbk(h2, salt));
 };
+// ---- compression helpers (CompressionStream exists in Node 18+, Workers and Netlify)
+const toB64 = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 8192) s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192)); return btoa(s); };
+const fromB64 = (b) => Uint8Array.from(atob(b), (c) => c.charCodeAt(0));
+async function pipeAll(u8, stream, cap) {
+  const out = []; let n = 0;
+  const w = stream.writable.getWriter();
+  const done = (async () => { try { await w.write(u8); await w.close(); } catch (e) { /* reader reports it */ } })();
+  const r = stream.readable.getReader();
+  for (;;) {
+    const { value, done: d } = await r.read();
+    if (d) break;
+    n += value.length;
+    if (cap && n > cap) { try { await r.cancel(); } catch (e) { /* ignore */ } throw new Error('too_large'); }
+    out.push(value);
+  }
+  await done;
+  const all = new Uint8Array(n); let o = 0; for (const c of out) { all.set(c, o); o += c.length; }
+  return all;
+}
+const gzText = async (text) => toB64(await pipeAll(new TextEncoder().encode(text), new CompressionStream('gzip')));
+const gunzipU8 = (u8, cap) => pipeAll(u8, new DecompressionStream('gzip'), cap);
+const gunzText = async (b64) => new TextDecoder().decode(await gunzipU8(fromB64(b64)));
 const isNewHash = (a) => typeof a === 'string' && a.startsWith('p1$');
 const same = (a, b) => {
   if (a.length !== b.length) return false;
@@ -38,6 +60,8 @@ const PLANS = { core: { cap: 200 }, growth: { cap: 500 }, campus: { cap: 1000 },
 const DAY = 24 * 60 * 60 * 1000;
 // AI question generations included each term (the vendor can add purchased packs that never expire)
 const GEN_PLAN = { core: 0, growth: 100, campus: 500, max: 1000 };
+// AI report card comments included each term (Campus and above); reset with a new term
+const CMT_PLAN = { core: 0, growth: 0, campus: 1500, max: 6000 };
 const FREE_REPLACE = 2; // replacements per batch that cost nothing
 const countStudents = (setup) => ((setup && setup.classes) || []).reduce((a, c) => a + ((c.roster || []).length), 0);
 function licView(l, setup, now) {
@@ -46,7 +70,8 @@ function licView(l, setup, now) {
   const state = l.state === 'off' || l.state === 'suspended' ? l.state : 'on';
   const status = state === 'off' ? 'deactivated' : state === 'suspended' ? 'suspended' : now <= l.paidUntil ? 'active' : now <= graceUntil ? 'grace' : 'expired';
   const allow = GEN_PLAN[l.plan] || 0, used = l.genUsed || 0, extra = l.genExtra || 0;
-  return { set: true, gen: { allow, used, extra, left: Math.max(0, allow - used) + extra }, state, plan: l.plan, cap: l.cap, paidUntil: l.paidUntil, graceUntil, graceDays: l.graceDays, status, enforce: l.enforce, school: l.school || '', students: countStudents(setup) };
+  const cAllow = CMT_PLAN[l.plan] || 0, cUsed = l.cmtUsed || 0;
+  return { set: true, gen: { allow, used, extra, left: Math.max(0, allow - used) + extra }, cmt: { allow: cAllow, used: cUsed, left: Math.max(0, cAllow - cUsed) }, state, plan: l.plan, cap: l.cap, paidUntil: l.paidUntil, graceUntil, graceDays: l.graceDays, status, enforce: l.enforce, school: l.school || '', students: countStudents(setup) };
 }
 
 // ---- question bank: one record per question. A question here has the same shape the paper builder uses.
@@ -158,6 +183,53 @@ export function makeHandler(store, opts = {}) {
   const vendorKey = typeof opts.vendorKey === 'string' ? opts.vendorKey : '';
   const aiKey = typeof opts.aiKey === 'string' ? opts.aiKey : '';
   const aiModel = opts.aiModel || 'claude-sonnet-5-5', aiFetch = opts.aiFetch || ((...a) => fetch(...a)), aiTimeout = opts.aiTimeoutMs ?? 24000;
+  // ---- the setup: small schools keep it in one record; a big school's classes are split into compressed pieces
+  // (one class per record, so no record gets near a database row limit) and a light index serves result checks.
+  const CHUNK_OVER = opts.chunkOver ?? 600000;
+  const lightClass = (c) => ({ id: c.id, name: c.name, hue: c.hue, code: c.code, prevCodes: c.prevCodes, roster: c.roster || [], armOf: c.armOf || {}, exams: (c.exams || []).map((e) => ({ id: e.id, subject: e.subject, open: e.open })) });
+  async function loadMeta() { const raw = await store.get('setup'); return raw ? JSON.parse(raw) : null; }
+  async function loadSetup() {
+    const m = await loadMeta();
+    if (!m || !m.chunked) return m;
+    const classes = await Promise.all((m.order || []).map(async (id) => { const v = await store.get('sc:' + id); return v ? JSON.parse(await gunzText(v)) : null; }));
+    const s = { ...m, classes: classes.filter(Boolean) };
+    delete s.chunked; delete s.order; delete s.hashes;
+    return s;
+  }
+  async function loadClass(cid) {
+    const m = await loadMeta();
+    if (!m) return null;
+    if (!m.chunked) return (m.classes || []).find((x) => x.id === cid) || null;
+    if (!(m.order || []).includes(cid)) return null;
+    const v = await store.get('sc:' + cid);
+    return v ? JSON.parse(await gunzText(v)) : null;
+  }
+  async function loadIdx() {
+    const m = await loadMeta();
+    if (!m) return null;
+    if (!m.chunked) return m;
+    const v = await store.get('sidx');
+    return v ? JSON.parse(v) : await loadSetup();
+  }
+  async function saveSetup(setup) {
+    const text = JSON.stringify(setup);
+    const m = await loadMeta();
+    if (text.length <= CHUNK_OVER) {
+      await store.set('setup', text);
+      if (m && m.chunked) { for (const id of m.order || []) await store.delete('sc:' + id); await store.delete('sidx'); }
+      return;
+    }
+    const hashes = {}, order = [], old = (m && m.chunked && m.hashes) || {};
+    for (const c of setup.classes || []) {
+      const body = JSON.stringify(c), hh = (await sha(body)).slice(0, 24);
+      order.push(c.id); hashes[c.id] = hh;
+      if (old[c.id] !== hh) await store.set('sc:' + c.id, await gzText(body));
+    }
+    await store.set('sidx', JSON.stringify({ stamp: setup.stamp, school: setup.school, classes: (setup.classes || []).map(lightClass) }));
+    const meta = { ...setup, classes: [], chunked: 2, order, hashes };
+    await store.set('setup', JSON.stringify(meta));
+    if (m && m.chunked) for (const id of m.order || []) if (!order.includes(id)) await store.delete('sc:' + id);
+  }
   async function getLicence() {
     try { return JSON.parse((await store.get('licence')) || 'null'); } catch (e) { return null; }
   }
@@ -244,8 +316,7 @@ export function makeHandler(store, opts = {}) {
   async function licBlock() {
     const lic = await getLicence();
     if (!lic) return null;
-    const raw = await store.get('setup');
-    const v = licView(lic, raw ? JSON.parse(raw) : null, Date.now());
+    const v = licView(lic, await loadIdx(), Date.now());
     if (v.status === 'deactivated') return json({ ok: false, error: 'licence_off', licence: v }, 402);
     if (v.status === 'suspended') return json({ ok: false, error: 'licence_suspended', licence: v }, 402);
     if (v.status === 'expired') return json({ ok: false, error: 'licence_expired', licence: v }, 402);
@@ -256,9 +327,8 @@ export function makeHandler(store, opts = {}) {
     const path = new URL(req.url).pathname.replace(/\/+$/, '');
     try {
       if (path === '/api/setup' && req.method === 'GET') {
-        const raw = await store.get('setup');
+        const setup = await loadSetup();
         const hasAdmin = !!(await store.get('auth'));
-        const setup = raw ? JSON.parse(raw) : null;
         let view = setup, authFailed = false;
         if (setup) {
           setup.adminHash = hasAdmin ? 'srv' : '';
@@ -280,9 +350,8 @@ export function makeHandler(store, opts = {}) {
         const ik = await ipKey(req);
         if (await ipLocked(ik)) return json({ ok: false, locked: true }, 429);
         const b = await req.json();
-        const raw = await store.get('setup');
-        const setup = raw ? JSON.parse(raw) : null;
-        const c = setup && (setup.classes || []).find((x) => x.id === (b && b.cid));
+        const setup = await loadMeta();
+        const c = setup && (await loadClass(b && b.cid));
         if (!c || !c.code || typeof b.code !== 'string' || nk(b.code) !== nk(c.code)) {
           await ipFail(ik);
           await sleep(failDelay);
@@ -307,8 +376,7 @@ export function makeHandler(store, opts = {}) {
       if (path === '/api/licence' && req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
 
       if (path === '/api/licence' && req.method === 'GET') {
-        const raw = await store.get('setup');
-        return jl({ ok: true, ai: !!aiKey, licence: licView(await getLicence(), raw ? JSON.parse(raw) : null, Date.now()) });
+        return jl({ ok: true, ai: !!aiKey, licence: licView(await getLicence(), await loadIdx(), Date.now()) });
       }
 
       // Only the vendor key (an environment setting that the school never sees) can change the licence.
@@ -331,11 +399,10 @@ export function makeHandler(store, opts = {}) {
         const addGens = b.addGens == null ? 0 : b.addGens;
         if (!Number.isInteger(addGens) || addGens < 0 || addGens > 100000) return jl({ ok: false, error: 'bad_gens' }, 400);
         const lic = { plan, cap, paidUntil, graceDays, enforce, state, school: String(b.school || '').slice(0, 120), updatedAt: Date.now(),
-          genUsed: b.newTerm === true ? 0 : (prev && prev.genUsed) || 0, genExtra: ((prev && prev.genExtra) || 0) + addGens,
+          genUsed: b.newTerm === true ? 0 : (prev && prev.genUsed) || 0, cmtUsed: b.newTerm === true ? 0 : (prev && prev.cmtUsed) || 0, genExtra: ((prev && prev.genExtra) || 0) + addGens,
           claim: typeof b.claimCode === 'string' && b.claimCode.trim().length >= 6 ? await sha('xd-claim:' + nk(b.claimCode)) : (b.claimCode === '' ? '' : (prev && prev.claim) || '') };
         await store.set('licence', JSON.stringify(lic));
-        const raw = await store.get('setup');
-        return jl({ ok: true, ai: !!aiKey, licence: licView(lic, raw ? JSON.parse(raw) : null, Date.now()) });
+        return jl({ ok: true, ai: !!aiKey, licence: licView(lic, await loadIdx(), Date.now()) });
       }
 
       if (path === '/api/login' && req.method === 'POST') {
@@ -377,8 +444,8 @@ export function makeHandler(store, opts = {}) {
           if (v.status === 'deactivated') return json({ ok: false, error: 'licence_off', licence: v }, 402);
           if (v.status === 'suspended') return json({ ok: false, error: 'licence_suspended', licence: v }, 402);
           if (v.status === 'expired') return json({ ok: false, error: 'licence_expired', licence: v }, 402);
-          const prevRaw = await store.get('setup');
-          const prev = prevRaw ? countStudents(JSON.parse(prevRaw)) : 0;
+          const prevIdx = await loadIdx();
+          const prev = prevIdx ? countStudents(prevIdx) : 0;
           if (v.students > lic.cap && v.students > prev) {
             if (lic.enforce === 'block') return json({ ok: false, error: 'over_cap', cap: lic.cap, count: v.students, licence: v }, 402);
             warn = 'over_cap';
@@ -400,13 +467,12 @@ export function makeHandler(store, opts = {}) {
           const c = await checkAdmin(h2);
           if (!c.ok) return bad(c);
         }
-        const raw = await store.get('setup');
-        const cur = raw ? JSON.parse(raw).stamp || 0 : 0;
+        const cur = ((await loadMeta()) || {}).stamp || 0;
         if (cur && !body.force && (body.baseStamp || 0) !== cur) return json({ ok: false, error: 'conflict', stamp: cur }, 409);
         const stamp = Math.max(Date.now(), cur + 1);
         setup.stamp = stamp;
         setup.adminHash = 'srv';
-        await store.set('setup', JSON.stringify(setup));
+        await saveSetup(setup);
         return json({ ok: true, stamp, warn, licence: licView(lic, setup, Date.now()) });
       }
 
@@ -416,9 +482,8 @@ export function makeHandler(store, opts = {}) {
         if (text.length > 2 * 1024 * 1024) return json({ ok: false, error: 'too_large' }, 413);
         const body = JSON.parse(text);
         const list = Array.isArray(body.results) ? body.results.slice(0, 50) : [];
-        const raw = await store.get('setup');
-        if (!raw) return json({ ok: false, error: 'no_setup' }, 409);
-        const setup = JSON.parse(raw);
+        const setup = await loadIdx();
+        if (!setup) return json({ ok: false, error: 'no_setup' }, 409);
         const accepted = [], rejected = [];
         const ik = await ipKey(req);
         if (await ipLocked(ik)) return json({ ok: false, locked: true }, 429);
@@ -455,7 +520,7 @@ export function makeHandler(store, opts = {}) {
         if (!c.ok) return bad(c);
         const since = parseInt(new URL(req.url).searchParams.get('since') || '0', 10) || 0;
         const keys = (await store.list('r:')).filter((k) => parseInt(k.slice(2, 15), 10) > since);
-        const setup = c.role === 'teacher' ? JSON.parse((await store.get('setup')) || 'null') : null;
+        const setup = c.role === 'teacher' ? await loadIdx() : null;
         const results = [];
         let upTo = since;
         for (const k of keys.slice(0, 500)) {
@@ -487,7 +552,7 @@ export function makeHandler(store, opts = {}) {
         if (text.length > 1024 * 1024) return json({ ok: false, error: 'too_large' }, 413);
         const body = JSON.parse(text);
         const list = Array.isArray(body.marks) ? body.marks.slice(0, 100) : [];
-        const setup = c.role === 'teacher' ? JSON.parse((await store.get('setup')) || 'null') : null;
+        const setup = c.role === 'teacher' ? await loadIdx() : null;
         const accepted = [], rejected = [];
         const num = (x) => typeof x === 'number' && Number.isFinite(x);
         const hkey = (h) => h.at + '|' + h.m + '|' + h.from + '|' + h.by;
@@ -534,7 +599,7 @@ export function makeHandler(store, opts = {}) {
         if (!c.ok) return bad(c);
         const since = parseInt(new URL(req.url).searchParams.get('since') || '0', 10) || 0;
         const keys = (await store.list('m:')).filter((k) => parseInt(k.slice(2, 15), 10) > since);
-        const setup = c.role === 'teacher' ? JSON.parse((await store.get('setup')) || 'null') : null;
+        const setup = c.role === 'teacher' ? await loadIdx() : null;
         const marks = [];
         let upTo = since;
         for (const k of keys.slice(0, 500)) {
@@ -643,6 +708,60 @@ export function makeHandler(store, opts = {}) {
       }
 
       // ---- AI question drafts. Counts against the school's allowance; the school's own key pays for it.
+      // ---- Campus and above: the AI turns a teacher's presets and rough notes into a report card comment. The teacher reads and edits it.
+      if (path === '/api/comment' && req.method === 'POST') {
+        const c = await principal(req);
+        if (!c.ok) return bad(c);
+        const lic = await getLicence();
+        if (!lic) return json({ ok: false, error: 'no_licence' }, 402);
+        if ((RANK[lic.plan] ?? 0) < 2) return json({ ok: false, error: 'plan' }, 403);
+        const blocked = await licBlock();
+        if (blocked) return blocked;
+        if (!aiKey) return json({ ok: false, error: 'ai_off' }, 503);
+        let b;
+        try { b = JSON.parse((await req.text()).slice(0, 20000)); } catch (e) { return json({ ok: false, error: 'bad' }, 400); }
+        const kind = b.kind === 'head' ? 'head' : 'class';
+        const name = cstr(b.name, 80);
+        if (!name) return json({ ok: false, error: 'bad_name' }, 400);
+        const presets = (Array.isArray(b.presets) ? b.presets : []).slice(0, 12).map((x) => cstr(x, 120)).filter(Boolean);
+        const notes = cstr(b.notes, 600);
+        if (!presets.length && !notes) return json({ ok: false, error: 'nothing_to_go_on' }, 400);
+        const gender = b.gender === 'boy' || b.gender === 'girl' ? b.gender : '';
+        const perf = b.perf && typeof b.perf === 'object' ? b.perf : {};
+        const subj = (Array.isArray(perf.subjects) ? perf.subjects : []).slice(0, 20).map((x) => cstr(x && x.s, 50) + ': ' + (Number.isFinite(x && x.p) ? Math.round(x.p) + '%' : '?') + (x && x.g ? ' (' + cstr(x.g, 2) + ')' : '')).join('; ');
+        const v0 = licView(lic, await loadIdx(), Date.now());
+        if (v0.cmt.left <= 0) return json({ ok: false, error: 'no_cmts', cmt: v0.cmt }, 402);
+        const sys = 'You write end-of-term report card comments for a Nigerian school. Write warm, professional, plain English in 1 to 3 sentences (about ' + (kind === 'head' ? '20 to 40' : '25 to 55') + ' words). ' +
+          (kind === 'head' ? 'This is the head teacher\'s comment: slightly more formal, encouraging, looking ahead. ' : 'This is the class teacher\'s comment: personal and specific to what the teacher observed. ') +
+          'Use ONLY what you are given: the teacher\'s chosen points, the teacher\'s rough notes and the marks. Never invent incidents, qualities or facts. Do not list marks as numbers unless it reads naturally. Refer to the pupil by one given name (if the name has several parts, use the first part). ' +
+          (gender ? 'The pupil is a ' + gender + ': use ' + (gender === 'boy' ? 'he/him/his' : 'she/her/hers') + '. ' : 'Gender is unknown: use the pupil\'s name instead of he or she. ') +
+          'No emojis, no quotation marks, no headings. Output only the comment.';
+        const user = 'Pupil: ' + name + '\nChosen points: ' + (presets.join('; ') || 'none') + '\nTeacher\'s rough notes: ' + (notes || 'none') +
+          '\nResults this term: ' + (subj || 'not given') + (Number.isFinite(perf.avg) ? '\nOverall average: ' + Math.round(perf.avg) + '%' + (perf.grade ? ' (grade ' + cstr(perf.grade, 2) + ')' : '') : '') + (cstr(perf.pos, 20) ? '\nPosition in class: ' + cstr(perf.pos, 20) : '');
+        let text = '';
+        const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), aiTimeout);
+        try {
+          const r = await aiFetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST', signal: ctl.signal,
+            headers: { 'x-api-key': aiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+            body: JSON.stringify({ model: aiModel, max_tokens: 300, system: sys, messages: [{ role: 'user', content: user }] }),
+          });
+          if (r.status === 401 || r.status === 403) return json({ ok: false, error: 'ai_key' }, 502);
+          if (r.status === 429) return json({ ok: false, error: 'ai_busy' }, 503);
+          if (!r.ok) return json({ ok: false, error: 'ai_down' }, 502);
+          const j = await r.json();
+          text = ((j.content || []).find((x) => x && x.type === 'text') || {}).text || '';
+        } catch (e) {
+          return json({ ok: false, error: e && e.name === 'AbortError' ? 'ai_timeout' : 'ai_down' }, 504);
+        } finally { clearTimeout(timer); }
+        text = text.replace(/\s+/g, ' ').replace(/^["“'\s]+|["”'\s]+$/g, '').slice(0, 700);
+        if (!text) return json({ ok: false, error: 'bad_output' }, 502); // nothing usable: not charged
+        const cur = (await getLicence()) || lic;
+        const lic2 = { ...cur, cmtUsed: (cur.cmtUsed || 0) + 1 };
+        await store.set('licence', JSON.stringify(lic2));
+        return json({ ok: true, text, cmt: licView(lic2, await loadIdx(), Date.now()).cmt });
+      }
+
       if (path === '/api/generate' && req.method === 'POST') {
         const c = await principal(req);
         if (!c.ok) return bad(c);
@@ -673,8 +792,7 @@ export function makeHandler(store, opts = {}) {
           batch = hexId('g');
         }
         const free = !!old && (batchRec.rep || 0) < FREE_REPLACE;
-        const raw0 = await store.get('setup');
-        const v0 = licView(lic, raw0 ? JSON.parse(raw0) : null, Date.now());
+        const v0 = licView(lic, await loadIdx(), Date.now());
         if (!free && v0.gen.left <= 0) return json({ ok: false, error: 'no_gens', gen: v0.gen }, 402);
         let out;
         const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), aiTimeout);
@@ -719,8 +837,7 @@ export function makeHandler(store, opts = {}) {
           if ((lic.genUsed || 0) < allow) lic2.genUsed = (lic.genUsed || 0) + 1; else lic2.genExtra = Math.max(0, (lic.genExtra || 0) - 1);
           await store.set('licence', JSON.stringify(lic2));
         }
-        const raw1 = await store.get('setup');
-        return json({ ok: true, items, batch, replaceLeft: Math.max(0, FREE_REPLACE - nb.rep), charged: !free, gen: licView(lic2, raw1 ? JSON.parse(raw1) : null, Date.now()).gen });
+        return json({ ok: true, items, batch, replaceLeft: Math.max(0, FREE_REPLACE - nb.rep), charged: !free, gen: licView(lic2, await loadIdx(), Date.now()).gen });
       }
 
       return json({ ok: false, error: 'not_found' }, 404);

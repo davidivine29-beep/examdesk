@@ -20,4 +20,4 @@ const aiKey = (globalThis.Netlify && Netlify.env.get('XD_AI_KEY')) || process.en
 const handle = makeHandler(store, { vendorKey, aiKey });
 
 export default async (req) => handle(req);
-export const config = { path: ['/api/setup', '/api/login', '/api/passcode', '/api/result', '/api/results', '/api/marks', '/api/teachers', '/api/me', '/api/licence', '/api/unlock', '/api/reset-admin', '/api/bank', '/api/generate'] };
+export const config = { path: ['/api/setup', '/api/login', '/api/passcode', '/api/result', '/api/results', '/api/marks', '/api/teachers', '/api/me', '/api/licence', '/api/unlock', '/api/reset-admin', '/api/bank', '/api/generate', '/api/comment'] };

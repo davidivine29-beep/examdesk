@@ -659,5 +659,39 @@ ok(r.s === 200, 'B: a suspended school can still read the bank');
   ok(pub.j.setup.classes[0].hasOpen === true, 'S: the class shows as having an open paper');
 }
 
+
+// ---- C: AI report card comments (Campus and above)
+{
+  const mem = new Map();
+  const st = { get: async (k) => mem.get(k) ?? null, set: async (k, v) => void mem.set(k, v), delete: async (k) => void mem.delete(k), list: async (p) => [...mem.keys()].filter((k) => k.startsWith(p)).sort() };
+  let seen = null;
+  const fetchC = async (url, init) => { seen = JSON.parse(init.body); return new Response(JSON.stringify({ content: [{ type: 'text', text: '"Amina has worked well this term and is always kind to others."' }] }), { status: 200, headers: { 'content-type': 'application/json' } }); };
+  const hC = makeHandler(st, { failDelayMs: 1, vendorKey: VK, aiKey: 'sk-test', aiFetch: fetchC });
+  const cC = async (method, path, body, headers = {}) => { const r = await hC(new Request('http://x' + path, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'content-type': 'application/json', ...headers } })); return { s: r.status, j: await r.json() }; };
+  await cC('PUT', '/api/setup', { setup: setup('S'), baseStamp: 0 }, { 'x-admin': A });
+  const body = { kind: 'class', name: 'Bello Amina', gender: 'girl', presets: ['Good performance but could be better', 'Very kind'], notes: 'talks a lot but helps others', perf: { avg: 64, grade: 'B', subjects: [{ s: 'Maths', p: 70, g: 'A' }, { s: 'English', p: 58, g: 'C' }] } };
+  let r = await cC('POST', '/api/comment', body, { 'x-admin': A });
+  ok(r.s === 402 && r.j.error === 'no_licence', 'C: no licence, no comments');
+  await cC('PUT', '/api/licence', { plan: 'growth', cap: 500, paidUntil: Date.now() + 90 * 86400000 }, V);
+  r = await cC('POST', '/api/comment', body, { 'x-admin': A });
+  ok(r.s === 403 && r.j.error === 'plan', 'C: Growth does not include comments');
+  await cC('PUT', '/api/licence', { plan: 'campus', cap: 1000, paidUntil: Date.now() + 90 * 86400000 }, V);
+  r = await cC('POST', '/api/comment', body, {});
+  ok(r.s === 401, 'C: sign-in is required');
+  r = await cC('POST', '/api/comment', body, { 'x-admin': A });
+  ok(r.s === 200 && r.j.ok && /^Amina has worked well/.test(r.j.text) && !/"/.test(r.j.text), 'C: a comment comes back with the quote marks stripped');
+  ok(r.j.cmt.used === 1 && r.j.cmt.allow === 1500 && r.j.cmt.left === 1499, 'C: it uses one of the 1,500 comments');
+  const prompt = JSON.stringify(seen);
+  ok(/Good performance but could be better/.test(prompt) && /talks a lot/.test(prompt) && /Maths: 70%/.test(prompt) && /she\/her/.test(prompt), 'C: the presets, notes, marks and gender reach the AI');
+  r = await cC('POST', '/api/comment', { ...body, presets: [], notes: '' }, { 'x-admin': A });
+  ok(r.s === 400 && r.j.error === 'nothing_to_go_on', 'C: needs at least a preset or a note');
+  const used = JSON.parse(mem.get('licence')).cmtUsed;
+  await cC('PUT', '/api/licence', { plan: 'campus', cap: 1000, paidUntil: Date.now() + 90 * 86400000, newTerm: true }, V);
+  ok(used === 1 && JSON.parse(mem.get('licence')).cmtUsed === 0, 'C: a new term resets the comment count');
+  await cC('PUT', '/api/licence', { plan: 'campus', cap: 1000, paidUntil: Date.now() + 90 * 86400000, state: 'suspended' }, V);
+  r = await cC('POST', '/api/comment', body, { 'x-admin': A });
+  ok(r.s === 402, 'C: a suspended school cannot write comments');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

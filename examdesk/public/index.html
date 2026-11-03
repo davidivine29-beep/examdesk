@@ -315,7 +315,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 </script>
 <script type="application/json" id="xd-setup">{"v":2,"stamp":0,"school":"","adminHash":"","classes":[{"id":"b1","name":"Basic 1","hue":1,"code":"","showRank":false,"roster":[],"exams":[]},{"id":"b2","name":"Basic 2","hue":2,"code":"","showRank":false,"roster":[],"exams":[]},{"id":"b3","name":"Basic 3","hue":3,"code":"","showRank":false,"roster":[],"exams":[]},{"id":"b4","name":"Basic 4","hue":4,"code":"","showRank":false,"roster":[],"exams":[]},{"id":"b5","name":"Basic 5","hue":5,"code":"","showRank":false,"roster":[],"exams":[]}]}</script>
 <script id="xd-code">
-(function(){
+(async function(){
 'use strict';
 
 /*PURE-START*/
@@ -717,10 +717,38 @@ const clone=o=>JSON.parse(JSON.stringify(o));
 const safeName=s=>String(s||'file').replace(/[\\\/:*?"<>|]+/g,' ').replace(/\s+/g,' ').trim()||'file';
 
 const mem={};
+/* Browser local storage holds about 5 MB. A school with hundreds of children writes far more than that in results, so everything the app keeps is also written to IndexedDB (hundreds of MB). Local storage stays the quick copy while it fits; when it does not, IndexedDB holds the data. */
+const XDB=(()=>{
+  let db=null;const dirty=new Map();let timer=null;
+  const open=()=>new Promise(res=>{try{const q=indexedDB.open('xd2kv',1);q.onupgradeneeded=()=>q.result.createObjectStore('kv');q.onsuccess=()=>res(q.result);q.onerror=()=>res(null);q.onblocked=()=>res(null);}catch(e){res(null);}});
+  async function load(){
+    try{db=await Promise.race([open(),new Promise(res=>setTimeout(()=>res(null),2500))]);}catch(e){db=null;}
+    if(!db)return {};
+    return await new Promise(res=>{
+      try{const out={},c=db.transaction('kv','readonly').objectStore('kv').openCursor();
+        c.onsuccess=()=>{const cur=c.result;if(cur){out[cur.key]=cur.value;cur.continue();}else res(out);};
+        c.onerror=()=>res(out);
+      }catch(e){res({});}
+    });
+  }
+  function flush(){
+    timer=null;if(!db||!dirty.size)return;
+    const batch=[...dirty];dirty.clear();
+    try{const tx=db.transaction('kv','readwrite'),os=tx.objectStore('kv');batch.forEach(([k,v])=>{if(v===undefined)os.delete(k);else os.put(v,k);});}catch(e){batch.forEach(([k,v])=>{if(!dirty.has(k))dirty.set(k,v);});}
+  }
+  function put(k,v,now){dirty.set(k,v);if(now)flush();else if(!timer)timer=setTimeout(flush,150);}
+  try{window.addEventListener('pagehide',flush);document.addEventListener('visibilitychange',()=>{if(document.hidden)flush();});}catch(e){}
+  return {load,put,flush,get ok(){return !!db;}};
+})();
+{const pre=await XDB.load();Object.keys(pre).forEach(k=>{mem[k]=pre[k];});}
 const store={
   get(k){try{const v=localStorage.getItem(k);if(v!=null)return JSON.parse(v);}catch(e){}return mem[k]==null?null:mem[k];},
-  set(k,v){mem[k]=v;try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}},
-  del(k){delete mem[k];try{localStorage.removeItem(k);}catch(e){}}
+  set(k,v){
+    mem[k]=v;let fit=true;
+    try{localStorage.setItem(k,JSON.stringify(v));}catch(e){fit=false;try{localStorage.removeItem(k);}catch(e2){}}
+    XDB.put(k,v,!fit);
+  },
+  del(k){delete mem[k];try{localStorage.removeItem(k);}catch(e){}XDB.put(k,undefined,true);}
 };
 const smem={};
 const ses={
@@ -755,9 +783,91 @@ function saveW(){
   const b=document.getElementById('dirty-badge');if(b)b.hidden=!dirty;
   applyBrand();
 }
+/* White-label (Campus and above) replaces the ExamDesk name and mark with the school's own. The hooks below do nothing on lower plans. */
+let wlOn=()=>false,wlCard=()=>'',wlDom=()=>{},wlColor=()=>{},aiBoxHtml=()=>'',cmTop=()=>'';
+
+wlOn=()=>!!(W.wl&&W.wl.on);
+wlColor=()=>{
+  const root=document.documentElement.style,c=W.wl&&W.wl.on&&/^#[0-9a-f]{6}$/i.test(W.wl.color||'')?W.wl.color:'';
+  if(!c){root.removeProperty('--brand');root.removeProperty('--on-brand');return;}
+  const v=[1,3,5].map(i=>parseInt(c.slice(i,i+2),16)),lum=(0.299*v[0]+0.587*v[1]+0.114*v[2])/255;
+  root.setProperty('--brand',c);root.setProperty('--on-brand',lum>0.6?'#101828':'#FFFFFF');
+};
+wlDom=root=>{
+  if(!wlOn()||!root)return;
+  const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);const hits=[];
+  for(let n=w.nextNode();n;n=w.nextNode())if(n.nodeValue.indexOf('ExamDesk')>-1)hits.push(n);
+  hits.forEach(n=>{n.nodeValue=n.nodeValue.replace(/your ExamDesk provider/g,'your provider').replace(/ExamDesk provider/g,'provider').replace(/ExamDesk/g,'CBT');});
+};
+wlCard=()=>{
+  const wl=W.wl||{},cf=W.report||{};
+  return '<section class="card stack"><h2>White-label</h2><p class="muted sm">Show only your school: your name and logo at the top, your colour, and no ExamDesk name anywhere the school or the children can see.</p>'+
+    '<label class="check"><input type="checkbox" data-wl="on"'+(wl.on?' checked':'')+'>Use my school’s branding instead of ExamDesk</label>'+
+    '<div class="row" style="gap:12px;align-items:center;flex-wrap:wrap"><label class="f" style="margin:0">Main colour<input type="color" data-wl="color" value="'+esc(/^#[0-9a-f]{6}$/i.test(wl.color||'')?wl.color:'#1F3A8A')+'"></label>'+
+    '<label class="btn small" style="cursor:pointer">'+(cf.logo?'Change logo':'Choose a logo')+'<input type="file" accept="image/*" id="wl-logo" hidden></label>'+(cf.logo?'<img src="'+esc(cf.logo)+'" alt="Logo" style="height:36px">':'')+
+    '<button class="btn small ghost" data-act="wl-reset">Back to the default colour</button></div>'+
+    '<p class="muted sm">The same logo is used on report cards and answer scripts.</p></section>';
+};
+
+
+/* AI report card comments (Campus and above): the teacher taps preset points and/or types rough notes, the AI turns them into a comment, the teacher reads and edits it. */
+const CM_PRE={
+  class:[['How they performed',['Excellent performance','Good performance','Good performance but could be better','Fair performance, needs to work harder','Not very good, needs a lot more effort','Has improved this term','Has dropped this term']],
+         ['In class',['Pays attention in class','Very kind and helpful','Respectful and well mannered','Hardworking','Participates actively','Easily distracted','Talks too much in class','Shy but capable','Neat and organised','Submits assignments on time','Often late with assignments','Needs to improve handwriting']]],
+  head:[['Overall',['Excellent result, keep it up','Good result, aim higher','Fair result, must put in more effort','Poor result, needs serious improvement','Pleased with the progress']],
+        ['Conduct',['Well behaved','Needs more discipline','Has leadership qualities','Parents are advised to give more support at home']]]
+};
+const cmSt=()=>{const st=S.st;return st.cm=st.cm||{busy:'',err:'',msg:''};};
+const cmKid=(c,n)=>{c.kids=c.kids||{};const k=nk(n);c.kids[k]=c.kids[k]||{};c.kids[k].ai=c.kids[k].ai||{};return c.kids[k];};
+aiBoxHtml=(c,n,k)=>{
+  const a=k.ai||{},cm=cmSt(),L=SRVS.lic,left=L&&L.cmt?L.cmt.left:null,id='ai:'+nk(n),E=esc;
+  const chips=kind=>CM_PRE[kind].map(([h,list])=>'<div><span class="muted sm">'+h+'</span><div class="row" style="gap:6px;flex-wrap:wrap;margin-top:4px">'+list.map(t=>{const on=(a[kind]||[]).includes(t);return '<button type="button" class="btn small'+(on?' primary':'')+'" aria-pressed="'+on+'" data-act="cm-chip" data-kind="'+kind+'" data-n="'+E(n)+'" data-t="'+E(t)+'">'+E(t)+'</button>';}).join('')+'</div></div>').join('');
+  const part=(kind,title,key,field)=>'<div class="stack" style="gap:8px"><b>'+title+'</b>'+chips(kind)+'<label class="f" style="margin:0">Your rough notes<span class="hint">Optional. Type it however you like, for example “talks a lot but always helps the others”.</span><textarea rows="2" data-ai="'+field+'" data-n="'+E(n)+'">'+E(a[field]||'')+'</textarea></label>'+
+    '<div class="row" style="gap:8px;align-items:center"><button class="btn small primary" data-act="cm-write" data-kind="'+kind+'" data-n="'+E(n)+'"'+(cm.busy?' disabled':'')+'>'+(cm.busy===kind+'|'+nk(n)?'Writing…':'Write the '+title.toLowerCase())+'</button>'+(k[key]&&a['made'+kind]?'<span class="muted sm">Written by AI. Read it and change anything you like.</span>':'')+'</div></div>';
+  return '<details class="card" data-dx="'+E(id)+'" style="margin-top:6px"><summary style="cursor:pointer;font-weight:700">Write the comments with AI</summary><div class="stack" style="margin-top:10px;gap:12px">'+
+    '<label class="f" style="margin:0;max-width:240px">Boy or girl<span class="hint">So the comment says he or she. Leave blank to use the name only.</span><select data-ai="g" data-n="'+E(n)+'"><option value=""'+(!a.g?' selected':'')+'>Not set</option><option value="boy"'+(a.g==='boy'?' selected':'')+'>Boy</option><option value="girl"'+(a.g==='girl'?' selected':'')+'>Girl</option></select></label>'+
+    part('class','Class teacher’s comment','tc','cn')+part('head','Head teacher’s comment','hc','hn')+
+    (left==null?'':'<p class="muted sm">'+left+' AI comment'+(left===1?'':'s')+' left this term.</p>')+(cm.err&&cm.errN===nk(n)?'<div class="err" role="alert">'+E(cm.err)+'</div>':'')+'</div></details>';
+};
+cmTop=(c,names)=>{
+  const todo=names.filter(n=>{const a=(rcKid(c,n).ai||{});return !String(rcKid(c,n).tc||'').trim()&&((a.class||[]).length||String(a.cn||'').trim());});
+  const cm=cmSt();
+  return '<section class="card stack"><h3>AI comments</h3><p class="muted sm">Open “Write the comments with AI” on a child, tap the points that fit and/or type rough notes, then press the button. The AI writes the comment; you read and edit it. Nothing is written without your points or notes.</p>'+
+    '<div class="row" style="gap:10px;align-items:center"><button class="btn" data-act="cm-all"'+(todo.length&&!cm.busy?'':' disabled')+'>Write class teacher comments for all '+todo.length+' child'+(todo.length===1?'':'ren')+' who have points or notes and no comment yet</button></div>'+(cm.msg?'<div class="note">'+esc(cm.msg)+'</div>':'')+'</section>';
+};
+function cmErr(j,status){
+  const e=j&&j.error;
+  return e==='no_cmts'?'No AI comments are left for this term. Ask your provider.':e==='ai_off'?'AI is not switched on for this school yet. Ask your provider.':e==='ai_key'?'The AI key set up for this school was not accepted. Tell your provider. You were not charged.':
+    e==='ai_busy'?'The AI is busy. Try again in a minute.':e==='ai_timeout'?'That took too long. Try again. You were not charged.':e==='plan'?'This school’s plan does not include AI comments.':e==='nothing_to_go_on'?'Tap at least one point or type a note first.':
+    /^licence_/.test(e||'')?'This school’s licence is not active, so comments cannot be written.':status===401?'Sign in again, then try again.':'That did not work ('+(status||'no connection')+'). You were not charged.';
+}
+async function cmWrite(c,n,kind,quiet){
+  const cm=cmSt(),k=cmKid(c,n),a=k.ai,rc=rcSt();
+  const field=kind==='head'?'hn':'cn',pre=a[kind]||[],notes=a[field]||'';
+  const d=rcData(c,n,rc.kind),per=(d.wMid||0)+(d.wEnd||0)||100;
+  const perf={avg:d.avg==null?undefined:d.avg,grade:d.avg==null?'':gradeOf(d.avg),subjects:d.rows.filter(r=>r.tot!=null).map(r=>({s:r.subject,p:r.tot/per*100,g:gradeOf(r.tot/per*100)}))};
+  if(c.showRank||c.rcPos){const ps=d.complete?rcPosition(c,n,rc.kind):null;if(ps)perf.pos=ordN(ps.rank)+' of '+ps.of;}
+  cm.busy=kind+'|'+nk(n);cm.err='';if(!quiet)render();
+  try{
+    const {r,j}=await bankReq('/api/comment',{method:'POST',body:JSON.stringify({kind,name:n,gender:a.g||'',presets:pre,notes,perf})});
+    if(r.ok&&j&&j.ok){k[kind==='head'?'hc':'tc']=j.text;a['made'+kind]=true;if(SRVS.lic)SRVS.lic.cmt=j.cmt;saveW();return true;}
+    cm.err=cmErr(j,r.status);cm.errN=nk(n);return false;
+  }catch(e){cm.err=cmErr(null,0);cm.errN=nk(n);return false;}
+  finally{cm.busy='';if(!quiet)render();}
+}
+
+function brandHtml(sub){
+  if(wlOn()){
+    const lg=W.report&&W.report.logo,nm=(W.school||'').trim()||'School';
+    const mk=lg?'<img class="mark" src="'+esc(lg)+'" alt="" style="height:36px;width:auto;max-width:72px;object-fit:contain">':'<span class="mark" aria-hidden="true" style="width:36px;height:36px;border-radius:9px;background:var(--brand);color:var(--on-brand);display:inline-flex;align-items:center;justify-content:center;font-weight:700">'+esc(nm.slice(0,1).toUpperCase())+'</span>';
+    return mk+'<div><b>'+esc(nm)+'</b><small>'+esc(sub)+'</small></div>';
+  }
+  return markSvg+'<div><b>ExamDesk</b><small>'+esc(W.school||sub)+'</small></div>';
+}
 function applyBrand(){
   try{
-    const n=(W.school||'').trim(),name=n?n+' CBT':'ExamDesk';
+    const n=(W.school||'').trim(),name=n?n+' CBT':(wlOn()?'CBT':'ExamDesk');
+    wlColor();
     document.title=name;
     const m=document.querySelector('meta[name="apple-mobile-web-app-title"]');if(m)m.setAttribute('content',name.slice(0,30));
     const l=document.querySelector('link[rel="manifest"]');
@@ -767,6 +877,9 @@ function applyBrand(){
         const abs=f=>new URL(f,location.href).href;
         const man={name,short_name:n.slice(0,12),description:'Computer-based tests',start_url:abs('./'),scope:abs('./'),display:'standalone',background_color:'#ffffff',theme_color:'#16324F',
           icons:[{src:abs('icon-192.png'),sizes:'192x192',type:'image/png',purpose:'any'},{src:abs('icon-512.png'),sizes:'512x512',type:'image/png',purpose:'any'},{src:abs('icon-maskable-512.png'),sizes:'512x512',type:'image/png',purpose:'maskable'}]};
+        const lg=wlOn()&&W.report&&W.report.logo,mt=lg&&/^data:(image\/(?:png|jpeg));/.exec(lg);
+        if(mt){man.icons=[{src:lg,sizes:'192x192 512x512',type:mt[1],purpose:'any'}];
+          document.querySelectorAll('link[rel="icon"],link[rel="apple-touch-icon"]').forEach(k=>{k.href=lg;});}
         const u=URL.createObjectURL(new Blob([JSON.stringify(man)],{type:'application/manifest+json'}));
         l.href=u;l.dataset.blob=u;
       }else l.href='manifest.webmanifest';
@@ -952,7 +1065,7 @@ let timerId=null;
 let ART;            // undefined while resolving, null if unavailable
 function toast(m){
   document.querySelectorAll('.toast').forEach(x=>x.remove());
-  const t=document.createElement('div');t.className='toast';t.setAttribute('role','status');t.textContent=m;
+  const t=document.createElement('div');t.className='toast';t.setAttribute('role','status');t.textContent=wlOn()?String(m).replace(/your ExamDesk provider/g,'your provider').replace(/ExamDesk/g,'CBT'):m;
   document.body.appendChild(t);setTimeout(()=>t.remove(),Math.min(8000,2600+m.length*45));
 }
 let lastNote='';
@@ -972,7 +1085,7 @@ async function hash2(s){
 }
 
 /* ---------- shared setup on the host (optional backend) ---------- */
-const TIER='growth',TIER_RANK={core:0,growth:1,campus:2,max:3};
+const TIER='campus',TIER_RANK={core:0,growth:1,campus:2,max:3};
 const hasTier=t=>(TIER_RANK[TIER]!==undefined?TIER_RANK[TIER]:3)>=TIER_RANK[t];
 const PLAN_NAME={core:'Core',growth:'Growth',campus:'Campus',max:'Campus Max'};
 const SRVS={on:false,hasAdmin:false,needClaim:false,checked:false,lic:null,ai:false};
@@ -1325,7 +1438,7 @@ function startTimer(){
 /* ---------- shared view bits ---------- */
 const markSvg='<svg class="mark" width="36" height="36" viewBox="8 8 228 228" role="img" aria-label="ExamDesk logo"><rect x="8" y="8" width="228" height="228" rx="54" fill="#16324F"/><rect x="49" y="51" width="146" height="110" rx="18" fill="none" stroke="#FFFFFF" stroke-width="10"/><path d="M122 162v25M92 190h60" fill="none" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round"/><circle cx="173" cy="166" r="35" fill="#42C59A" stroke="#16324F" stroke-width="8"/><path d="m157 166 11 11 21-24" fill="none" stroke="#16324F" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/><path d="M83 101h33M83 126h23" fill="none" stroke="#75A7E8" stroke-width="9" stroke-linecap="round"/><circle cx="145" cy="101" r="7" fill="#75A7E8"/></svg>';
 function topBar(right){
-  return '<header class="top"><div class="brand">'+markSvg+'<div><b>ExamDesk</b><small>'+esc(W.school||'Computer-based test')+'</small></div></div><div class="top-actions">'+right+'</div></header>';
+  return '<header class="top"><div class="brand">'+brandHtml('Computer-based test')+'</div><div class="top-actions">'+right+'</div></header>';
 }
 const acStyle=c=>'--ac:var(--h'+c.hue+');--acs:var(--h'+c.hue+'s)';
 const emptyBox=(title,text,btn)=>'<div class="empty"><b>'+esc(title)+'</b><p>'+esc(text)+'</p>'+(btn||'')+'</div>';
@@ -1520,7 +1633,7 @@ function staffBar(){
   const cur=k=>k==='classes'?(st.page==='classes'||st.page==='class'||st.page==='child'):st.page===k;
   const bk=hasTier('growth')&&SA&&SRVS.on?[['bank','Question bank']]:[];
   const nav=(ME?[['classes','Classes']].concat(bk):[['classes','Classes']].concat(bk,hasTier('growth')&&SA&&SRVS.on?[['teachers','Teachers']]:[],[['setup','Publish and backup']])).map(([k,l])=>'<button class="navlink" data-act="spage" data-p="'+k+'" aria-current="'+(cur(k)?'page':'false')+'">'+l+'</button>').join('');
-  return '<header class="top"><div class="brand">'+markSvg+'<div><b>ExamDesk</b><small>'+esc(W.school||'Examiner')+'</small></div></div><nav class="snav">'+nav+'</nav>'+
+  return '<header class="top"><div class="brand">'+brandHtml('Examiner')+'</div><nav class="snav">'+nav+'</nav>'+
   '<div class="top-actions"><span id="dirty-badge" class="badge warn"'+(dirty?'':' hidden')+'>'+(SA?'Not in page file yet':'Unpublished changes')+'</span><button class="btn small" data-act="home">Candidate screen</button><button class="btn small" data-act="logout">'+(ME?'Sign out':'Lock')+'</button></div></header>'+(ME?'<div class="note" style="margin:0 0 14px">Signed in as <b>'+esc(ME.name)+'</b>. You see only the classes and subjects assigned to you.</div>':'');
 }
 function viewStaff(){
@@ -1913,11 +2026,11 @@ function tabReport(c){
     return '<article class="card stack" style="gap:8px"><div class="row" style="gap:12px;align-items:flex-start"><div style="width:64px;height:64px;border:1px solid #bbb;border-radius:6px;overflow:hidden;background:#f2f4f8;flex:none;display:flex;align-items:center;justify-content:center;font-size:10px;color:#889">'+(ph?'<img src="'+esc(ph)+'" alt="" style="width:100%;height:100%;object-fit:cover">':'No photo')+'</div>'+
     '<div class="grow"><div class="row" style="justify-content:space-between"><b>'+esc(n)+'</b>'+sts+'</div><div class="row" style="gap:8px;margin-top:6px"><label class="btn small" style="cursor:pointer">'+(ph?'Change photo':'Add photo')+'<input type="file" accept="image/*" data-rcphoto="'+esc(n)+'" hidden></label>'+(ph?'<button class="btn small" data-act="rc-nophoto" data-n="'+esc(n)+'">Remove</button>':'')+'<button class="btn small" data-act="rc-prev" data-n="'+esc(n)+'">Preview</button><button class="btn small primary" data-act="rc-print" data-n="'+esc(n)+'">Print</button></div></div></div>'+
     '<div class="setgrid"><label class="f">Age<input type="text" data-kid="age" data-n="'+esc(n)+'" value="'+esc(k.age||'')+'" placeholder="10 years"></label><label class="f">Reg. no<input type="text" data-kid="reg" data-n="'+esc(n)+'" value="'+esc(k.reg||'')+'"></label></div>'+
-    '<label class="f">Class teacher’s comment<textarea rows="2" data-kid="tc" data-n="'+esc(n)+'">'+esc(k.tc||'')+'</textarea></label><label class="f">Head teacher’s comment<textarea rows="2" data-kid="hc" data-n="'+esc(n)+'">'+esc(k.hc||'')+'</textarea></label></article>';}).join('');
+    '<label class="f">Class teacher’s comment<textarea rows="2" data-kid="tc" data-n="'+esc(n)+'">'+esc(k.tc||'')+'</textarea></label><label class="f">Head teacher’s comment<textarea rows="2" data-kid="hc" data-n="'+esc(n)+'">'+esc(k.hc||'')+'</textarea></label>'+aiBoxHtml(c,n,k)+'</article>';}).join('');
   const prev=rc.prev&&names.some(n=>nk(n)===nk(rc.prev))?'<section class="card stack"><div class="row" style="justify-content:space-between"><h3>Preview: '+esc(rc.prev)+'</h3><button class="btn small" data-act="rc-prevx">Close</button></div><div style="overflow:auto;border:1px solid #ccc;border-radius:6px"><iframe title="Card preview" style="width:210mm;height:297mm;border:0;transform-origin:top left" srcdoc="'+esc(rcDoc(c,[rc.prev],kind))+'"></iframe></div></section>':'';
   return '<div class="stack"><section class="card stack"><h2>Report cards</h2><div class="row" style="gap:10px;align-items:center"><label class="f" style="margin:0">Card<select id="rc-kind" data-rckind><option value="end"'+(kind==='end'?' selected':'')+'>End-of-term (mid-term + exam)</option><option value="mid"'+(kind==='mid'?' selected':'')+'>Mid-term</option></select></label><label class="f" style="margin:0">Class teacher’s name<input type="text" data-clt="1" value="'+esc(c.teacher||'')+'"></label><button class="btn primary" data-act="rc-printall"'+(names.length?'':' disabled')+'>Print the whole class ('+names.length+')</button></div>'+'<label class="check"><input type="checkbox" data-rcpos="1"'+((c.rcPos==null?c.showRank:c.rcPos)?' checked':'')+'>Print each child’s position in class on the card (only for children with every subject marked)</label>'+warn+
     '<p class="muted sm">Photos are kept on this computer, so add them and print from the same one. Print from your browser, choose “Save as PDF” if you want a file.</p>'+(rc.msg?'<div class="note">'+esc(rc.msg)+'</div>':'')+(rc.err?'<div class="err" role="alert">'+esc(rc.err)+'</div>':'')+'</section>'+setup+prev+
-    asCard(c,names)+
+    cmTop(c,names)+asCard(c,names)+
     (names.length?rows:'<section class="card">'+emptyBox('The class list is empty','Add the children first.','')+'</section>')+'</div>';
 }
 
@@ -2022,7 +2135,7 @@ async function tplDocx(kind){
   zip.file('word/document.xml','<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document '+W2+'><w:body>'+paras+'<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>');
   return zip.generateAsync({type:'blob',mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
 }
-const tplName=kind=>'ExamDesk template - '+(TPL_KINDS.find(k=>k[0]===kind)||TPL_KINDS[3])[1]+'.docx';
+const tplName=kind=>(wlOn()?'Question template - ':'ExamDesk template - ')+(TPL_KINDS.find(k=>k[0]===kind)||TPL_KINDS[3])[1]+'.docx';
 async function saveTemplate(kind){
   const st=S.st;st.fallback=null;
   try{
@@ -2363,6 +2476,7 @@ function pageSetup(){
   (st.pending&&st.pending.kind==='setup'?'<div class="note stack"><span>Replace the setup on this device with <b>'+esc(st.pending.name)+'</b>? It then shows as unpublished.</span><div class="row"><button class="btn danger small" data-act="apply-setup">Replace</button><button class="btn small" data-act="cancel-pending">Cancel</button></div></div>':'')+'</section>'+
   '<section class="card stack"><div><h2>Results on this device</h2><p class="muted" style="margin-top:4px"><b class="mono">'+R.length+'</b> result'+(R.length===1?'':'s')+' saved here. To gather several devices, save a results file from each and merge them on one.</p></div>'+
   '<div class="row"><button class="btn" data-act="export-results">Save results file</button><label class="btn" style="display:inline-block">Merge results file<input id="f-results" type="file" accept=".json,application/json" hidden></label>'+(st.conf==='clear'?'<button class="btn danger small" data-act="clear-results">Yes, remove all results</button><button class="btn small" data-act="conf-no">Cancel</button>':'<button class="btn danger small" data-act="clear-results">Clear results</button>')+'</div></section>'+
+  wlCard()+
   '<section class="card stack"><h2>School and passcode</h2>'+
   '<label class="f">School name<span class="hint">Shown under the ExamDesk name</span><input id="s-school" type="text" data-set="school" value="'+esc(W.school||'')+'"></label>'+
   '<label class="f">New passcode<input id="s-newpass" type="password" data-bind="st.newPass" value="'+esc(st.newPass)+'" autocomplete="new-password"></label><div><button class="btn" data-act="set-pass">Change passcode</button></div></section></div>';
@@ -2375,6 +2489,7 @@ function render(){
   if(ae&&ae.id)fid=ae.id;
   if(ae&&ae.dataset&&ae.dataset.act==='pick')fk='[data-act="pick"][data-k="'+ae.dataset.k+'"]';
   $app.innerHTML=S.view==='home'?viewHome():S.view==='intro'?viewIntro():S.view==='exam'?viewExam():S.view==='result'?viewResult():viewStaff();
+  wlDom($app);
   announce();
   if(S.view==='staff')(S.st.openDx||[]).forEach(id=>{const d=$app.querySelector('details[data-dx="'+id+'"]');if(d)d.open=true;});
   if(S.view==='exam')startTimer();else stopTimer();
@@ -2548,6 +2663,13 @@ async function act(a,el){
     case 'take-server':{if(!NEWER)break;const sv=NEWER;adoptServer(sv);st.note='';if(!sv.pub&&!sv.part&&ensureCodes())saveW();st.flash='Loaded the version saved on the server.';render();break;}
     case 'dev-setup':await setupDevice();break;
     case 'dev-clear':{Object.keys(UNL).forEach(k=>{if(UNL[k]&&UNL[k].dev)delete UNL[k];});saveUnl();st.flash='This device no longer opens classes by itself.';render();break;}
+    case 'cm-chip':{const c=cls(st.cid);if(!c)break;const k=cmKid(c,el.dataset.n),kind=el.dataset.kind,t=el.dataset.t;const l=k.ai[kind]||[];k.ai[kind]=l.includes(t)?l.filter(x=>x!==t):l.concat(t);saveW();render();break;}
+    case 'cm-write':{const c=cls(st.cid);if(c)await cmWrite(c,el.dataset.n,el.dataset.kind);break;}
+    case 'cm-all':{const c=cls(st.cid);if(!c)break;const cm=cmSt();const names=classNames(c).roster.filter(n=>{const a=rcKid(c,n).ai||{};return !String(rcKid(c,n).tc||'').trim()&&((a.class||[]).length||String(a.cn||'').trim());});
+      let done=0,fail=0;cm.msg='';cm.err='';
+      for(const n of names){cm.msg='Writing… '+done+' of '+names.length;render();const okk=await cmWrite(c,n,'class',true);if(okk)done++;else{fail++;if(/No AI comments|not switched|not accepted|licence/.test(cm.err||''))break;}}
+      cm.msg=done+' comment'+(done===1?'':'s')+' written'+(fail?'. '+fail+' could not be written: '+(cm.err||'try again')+'.':'. Read each one before you print.');render();break;}
+    case 'wl-reset':{if(W.wl){delete W.wl.color;saveW();}render();break;}
     case 'rc-prev':{rcSt().prev=el.dataset.n;render();break;}
     case 'rc-prevx':{rcSt().prev='';render();break;}
     case 'rc-print':{const c=cls(st.cid);if(c)rcPrint(rcDoc(c,[el.dataset.n],rcSt().kind));break;}
@@ -2847,6 +2969,7 @@ $app.addEventListener('change',async e=>{
   if(t.dataset.rckind!==undefined){rcSt().kind=t.value==='mid'?'mid':'end';render();return;}
   if(t.dataset.rcpos){const c=cls(st.cid);if(c){c.rcPos=t.checked;saveW();render();}return;}
   if(t.dataset.clt){const c=cls(st.cid);if(c){c.teacher=String(t.value).trim().slice(0,80);saveW();}return;}
+  if(t.dataset.ai){const c=cls(st.cid);if(!c)return;const k=cmKid(c,t.dataset.n);k.ai[t.dataset.ai]=String(t.value).trim().slice(0,600);saveW();return;}
   if(t.dataset.kid){const c=cls(st.cid);if(!c)return;c.kids=c.kids||{};const k=nk(t.dataset.n);c.kids[k]=c.kids[k]||{};c.kids[k][t.dataset.kid]=String(t.value).trim().slice(0,600);saveW();return;}
   if(t.dataset.rc){rcSt().school=true;W.report=Object.assign({},W.report||{});
     if(t.dataset.rc==='wMid'||t.dataset.rc==='wEnd'){const v=parseInt(t.value,10);if(!(v>=1&&v<=100)){render();return;}W.report[t.dataset.rc]=v;}
@@ -2905,6 +3028,8 @@ $app.addEventListener('change',async e=>{
     saveW();return;
   }
   if(t.dataset.mkname){store.set(K_MARKER,cleanName(t.value));return;}
+  if(t.dataset.wl){W.wl=Object.assign({},W.wl||{});if(t.dataset.wl==='on')W.wl.on=t.checked;else if(t.dataset.wl==='color')W.wl.color=t.value;saveW();render();return;}
+  if(t.id==='wl-logo'&&t.files&&t.files[0]){try{W.report=Object.assign({},W.report||{});W.report.logo=await imgData(t.files[0],'logo');saveW();}catch(e){toast('That logo could not be read. Use a JPG or PNG.');}render();return;}
   if(t.dataset.set==='school'){W.school=cleanName(t.value);saveW();return;}
   if(t.id==='f-docx'&&t.files[0]){await handleDocx(t.files[0]);return;}
   if(t.id==='f-roster'&&t.files[0]){await handleRoster(t.files[0]);return;}
