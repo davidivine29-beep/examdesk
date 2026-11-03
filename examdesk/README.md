@@ -45,6 +45,8 @@ Papers can mix multiple choice, fill-in-the-blank and theory questions. In the e
 2. Open the class's **Report cards** tab, fill **School details** once, add each child's photo, age, reg. no and comments.
 3. Pick the card type and press **Print** for one child or **Print the whole class**. Add the photos on the computer you print from.
 
+**Answer scripts.** On the same tab, choose a paper and print a pupil's answer script (their answers, marks per question, correct answers, total), in the order that pupil saw the questions, or print the whole class.
+
 ## Setting up exam computers
 Sign in as examiner on each computer or tablet used for the test, open **Classes**, press **Set up this device for candidates**, then press **Lock**. Children on that device pick their name directly. Devices you have not set up ask for the class access code instead.
 

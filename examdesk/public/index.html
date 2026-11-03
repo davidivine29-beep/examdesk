@@ -740,6 +740,7 @@ let W,bootNote='';
 })();
 let dirty=JSON.stringify(W)!==EMBED_STR;
 function saveW(){
+  try{ensureCodes();}catch(e){}
   store.set(K_DRAFT,{base:SETUP0.stamp,setup:W});
   try{reindex();}catch(e){}
   dirty=JSON.stringify(W)!==EMBED_STR;
@@ -798,7 +799,7 @@ function canActR(r){
   return !!ex&&(ME.subj||[]).some(x=>x.cid===c.id&&nk(x.subject)===nk(ex.subject));
 }
 const myClasses=()=>ME?W.classes.filter(c=>(ME.form||[]).some(f=>f.cid===c.id)||(ME.subj||[]).some(x=>x.cid===c.id)):W.classes;
-const authHdr=()=>{const h2=ses.get(K_H2);return ME?{'x-admin':h2,'x-user':ME.id}:{'x-admin':h2};};
+const authHdr=()=>{const h2=ses.get(K_H2);if(!h2)return {};return ME?{'x-admin':h2,'x-user':ME.id}:{'x-admin':h2};};
 const resFor=(cid,name,eid)=>{const r=IDX.get(cid+'|'+nk(name)+'|'+eid)||null;return r&&canActR(r)?r:null;};
 reindex();
 
@@ -935,7 +936,7 @@ async function readWorkbook(file){
 }
 
 /* ---------- state ---------- */
-const S={view:'home',err:'',form:{cid:'',name:'',eid:'',code:''},cand:null,ses:null,res:null,confirmSubmit:false,
+const S={view:'home',err:'',form:{cid:'',name:'',eid:'',code:'',ucode:''},cand:null,ses:null,res:null,confirmSubmit:false,
   st:{authed:false,page:'classes',cid:'',tab:'register',child:'',aeid:'',pass:'',p1:'',p2:'',newPass:'',flash:'',err:'',
     imp:null,paste:'',rimp:null,bulk:null,rosterText:null,newClass:'',conf:'',fallback:null,pending:null,busy:false,openDx:[],note:''}};
 let timerId=null;
@@ -962,18 +963,80 @@ async function hash2(s){
 }
 
 /* ---------- shared setup on the host (optional backend) ---------- */
-const TIER='core',TIER_RANK={core:0,growth:1,campus:2,max:3};
+const TIER='growth',TIER_RANK={core:0,growth:1,campus:2,max:3};
 const hasTier=t=>(TIER_RANK[TIER]!==undefined?TIER_RANK[TIER]:3)>=TIER_RANK[t];
 const PLAN_NAME={core:'Core',growth:'Growth',campus:'Campus',max:'Campus Max'};
-const SRVS={on:false,hasAdmin:false,checked:false,lic:null};
+const SRVS={on:false,hasAdmin:false,checked:false,lic:null,ai:false};
+let NEWER=null;   // a newer setup on the server while this device holds unsaved edits
 const switchedOff=()=>SA&&SRVS.on&&!!SRVS.lic&&SRVS.lic.status==='deactivated';
+/* On a school server the page only learns class names. A class access code opens one class (its names and open papers) on this device. */
+const K_UNL='xd2_unl';
+let UNL=(()=>{const u=store.get(K_UNL)||{},now=Date.now(),o={};Object.keys(u).forEach(k=>{if(u[k]&&u[k].cls&&u[k].at>now-(u[k].dev?12:6)*3600*1000)o[k]=u[k];});return o;})();
+const saveUnl=()=>store.set(K_UNL,UNL);
+const tokFor=cid=>(UNL[cid]&&UNL[cid].tok)||'';
+function applyUnlocks(){W.classes=W.classes.map(c=>(c.locked||c.fromUnl)&&UNL[c.id]?Object.assign(clone(UNL[c.id].cls),{fromUnl:1}):c);}
+const CODE_AB='ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+function genCode(){const a=new Uint8Array(6);crypto.getRandomValues(a);return [...a].map(x=>CODE_AB[x%CODE_AB.length]).join('');}
+function ensureCodes(){let n=0;if(!(SA&&SRVS.on)||W.pub||W.part)return 0;W.classes.forEach(c=>{if(!String(c.code||'').trim()){c.code=genCode();n++;}});return n;}
+async function unlockClass(){
+  const f=S.form,fail=m=>{S.err=m;render();};
+  const c=f.cid?cls(f.cid):null;
+  if(!c)return fail('Choose your class.');
+  if(!String(f.ucode||'').trim())return fail('Type the access code.');
+  if(S.busyU)return;
+  S.busyU=true;
+  try{
+    const r=await srvFetch('/api/unlock',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({cid:c.id,code:f.ucode})});
+    const j=await r.json().catch(()=>null);
+    if(r.status===429){S.busyU=false;return fail('Too many wrong codes from this network. Wait a few minutes, then try again.');}
+    if(!j||!j.ok){S.busyU=false;return fail(j&&j.error==='no_code'?'This class has no access code yet. Ask your teacher.':'The access code is not correct.');}
+    UNL[c.id]={tok:j.tok,cls:j.cls,stamp:j.stamp||0,code:String(f.ucode).trim(),at:Date.now()};saveUnl();applyUnlocks();
+    f.ucode='';S.err='';
+  }catch(e){S.busyU=false;return fail('Could not reach the server. Opening a class needs the internet.');}
+  S.busyU=false;render();
+}
+// The invigilator signs in once and opens every class on this device, so children never type a code here.
+async function setupDevice(){
+  const st=S.st;if(st.busy)return;
+  const list=W.classes.filter(c=>c.code&&!c.locked&&!c.fromUnl);
+  if(!list.length){st.err='There is nothing to set up yet. Add a class first and save to the server.';render();return;}
+  if(dirty){st.err='Save to the server first, so the codes on the server match.';render();return;}
+  st.busy=true;st.err='';render();
+  let n=0,bad=0;
+  for(const c of list){
+    try{
+      const r=await srvFetch('/api/unlock',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({cid:c.id,code:c.code})});
+      const j=await r.json().catch(()=>null);
+      if(j&&j.ok){UNL[c.id]={tok:j.tok,cls:j.cls,stamp:j.stamp||0,code:c.code,at:Date.now(),dev:true};n++;}else bad++;
+    }catch(e){bad++;}
+  }
+  saveUnl();st.busy=false;
+  st.flash=n?n+' class'+(n===1?'':'es')+' ready on this device for 12 hours. Press Lock when you finish and children can just pick their names.'+(bad?' '+bad+' could not be opened. Save to the server and try again.':''):'No class could be opened. Save to the server and try again.';
+  render();
+}
+const devReady=()=>Object.keys(UNL).filter(k=>UNL[k]&&UNL[k].dev);
+// when the school saves a new setup, classes already opened on this device are fetched again with the code that opened them
+async function refreshUnlocks(stamp){
+  let changed=false;
+  for(const cid of Object.keys(UNL)){
+    const u=UNL[cid];if(!u||u.stamp===stamp)continue;
+    try{
+      const r=await srvFetch('/api/unlock',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({cid,code:u.code})});
+      const j=await r.json().catch(()=>null);
+      if(j&&j.ok){UNL[cid]={tok:j.tok,cls:j.cls,stamp:j.stamp||0,code:u.code,at:u.at,dev:u.dev};changed=true;}
+      else if(r.status===401){delete UNL[cid];changed=true;}
+    }catch(e){}
+  }
+  if(changed){saveUnl();}
+  return changed;
+}
 async function srvFetch(path,opt){
   const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),7000);
   try{return await fetch(path,Object.assign({cache:'no-store',signal:ctl.signal},opt||{}));}finally{clearTimeout(t);}
 }
 function adoptServer(sv){
-  SETUP0=sv;EMBED_STR=JSON.stringify(SETUP0);W=clone(SETUP0);dirty=false;
-  store.set(K_SRV,SETUP0);store.set(K_DRAFT,{base:SETUP0.stamp,setup:W});applyBrand();
+  NEWER=null;SETUP0=sv;EMBED_STR=JSON.stringify(SETUP0);W=clone(SETUP0);dirty=false;
+  store.set(K_SRV,SETUP0);store.set(K_DRAFT,{base:SETUP0.stamp,setup:W});if(sv.pub)applyUnlocks();applyBrand();
   if(S.view==='home'||S.view==='staff')render();
 }
 let syncing=false;
@@ -981,14 +1044,24 @@ async function syncServer(){
   if(!SA||syncing)return;
   syncing=true;
   try{
-    const r=await srvFetch('/api/setup');
+    const r=await srvFetch('/api/setup',{headers:authHdr()});
     const j=r.ok&&/json/.test(r.headers.get('content-type')||'')?await r.json():null;
     if(!j||j.kind!=='xd-srv'){SRVS.on=false;return;}
-    const was=SRVS.on;SRVS.on=true;SRVS.hasAdmin=!!j.hasAdmin;const oldSt=SRVS.lic&&SRVS.lic.status;SRVS.lic=j.licence||null;SRVS.checked=true;if(oldSt!==(SRVS.lic&&SRVS.lic.status)&&!S.ses&&(S.view==='home'||S.view==='staff'))setTimeout(render,0);store.set(K_HASSRV,1);
+    const was=SRVS.on;SRVS.on=true;SRVS.ai=!!j.ai;SRVS.hasAdmin=!!j.hasAdmin;const oldSt=SRVS.lic&&SRVS.lic.status;SRVS.lic=j.licence||null;SRVS.checked=true;if(oldSt!==(SRVS.lic&&SRVS.lic.status)&&!S.ses&&(S.view==='home'||S.view==='staff'))setTimeout(render,0);store.set(K_HASSRV,1);
+    if(j.authFailed&&S.st.authed){
+      S.st.authed=false;ses.del(K_AUTH);ses.del(K_H2);ses.del(K_USER);ME=null;S.st.err='Your passcode is no longer valid. Sign in again.';
+      if(S.view==='staff')render();
+    }
     const sv=j.setup;
-    if(sv&&Array.isArray(sv.classes)&&(sv.stamp||0)!==(SETUP0.stamp||0)){
-      if(!S.ses&&!dirty)adoptServer(sv);
-      else if(dirty&&(sv.stamp||0)>(SETUP0.stamp||0)){S.st.note='A newer setup was saved to the server. Reload this page to get it. Saving your changes now would be refused.';}
+    if(sv&&Array.isArray(sv.classes)&&!(sv.pub&&S.st.authed)){
+      const kind=(!!sv.pub!==!!W.pub)||(!!sv.part!==!!W.part);
+      if((sv.stamp||0)!==(SETUP0.stamp||0)||kind){
+        if(!S.ses&&!dirty){adoptServer(sv);if(!sv.pub&&!sv.part&&S.st.authed&&!ME&&ensureCodes())saveW();}
+        else if(dirty&&(sv.stamp||0)>(SETUP0.stamp||0)){NEWER=sv;S.st.note='A newer setup was saved to the server, so saving your changes here would be refused. On Publish and backup, press “Use the server’s version” to load it (your unsaved changes on this device are dropped).';if(S.view==='staff')render();}
+      }
+      if(sv.pub){
+        if(!S.ses&&await refreshUnlocks(sv.stamp||0)||W.classes.some(c=>c.locked&&UNL[c.id])){applyUnlocks();if(!S.ses&&S.view==='home')render();}
+      }
     }
     if(!was&&S.view==='staff')render();
     flushResults();
@@ -998,6 +1071,8 @@ async function syncServer(){
 }
 async function srvSave(){
   const st=S.st;if(st.busy)return;
+  if(W.pub||W.part){st.err='This device only holds a partial copy of the setup. Lock, then sign in as the administrator, and try again.';render();return;}
+  ensureCodes();
   let h2=ses.get(K_H2);
   if(!h2){
     if(!st.savePass){st.err='Type your passcode to save.';render();return;}
@@ -1049,12 +1124,12 @@ async function flushResults(){
       const r=await srvFetch('/api/result',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({results:batch})});
       const j=await r.json().catch(()=>null);
       if(!r.ok||!j||!j.ok)break;
-      (j.accepted||[]).forEach(id=>SYNCED.add(id));
+      (j.accepted||[]).forEach(id=>{SYNCED.add(id);const x=R.find(y=>y.id===id);if(x&&x.tok)delete x.tok;});
       (j.rejected||[]).forEach(x=>{if(x&&x.id)REJ[x.id]=x.reason||'refused';});
     }
   }catch(e){}
   finally{
-    flushing=false;saveSync();
+    flushing=false;saveSync();saveR();
     if(pendingList().length!==before)refreshSyncUI();
   }
 }
@@ -1218,7 +1293,9 @@ function finish(auto){
   const r={id:uid(),cid:s.cid,name:s.name,eid:s.exam.id,subject:s.exam.subject,title:s.exam.title,
     score:m.score,total:m.total,pct:m.pct,grade:m.grade,pass:m.pass,passMark:s.exam.passMark,
     startedAt:s.startedAt,submittedAt:now,usedSec:Math.min(Math.round((now-s.startedAt)/1000),s.exam.duration*60),auto:!!auto,
-    ans,txt,ok,sig:sigOf(s.exam),prov:m.prov,cbt:m.cbt};
+    ans,txt,ok,sig:sigOf(s.exam),prov:m.prov,cbt:m.cbt,ord:s.qs.map(e=>e.i)};
+  if(s.exam.shuffleO){const pm={};s.qs.forEach(e=>{if(e.perm.some((v,k)=>v!==k))pm[e.i]=e.perm;});if(Object.keys(pm).length)r.perm=pm;}
+  const tk=tokFor(s.cid);if(tk)r.tok=tk;
   R.push(r);saveR();store.del(K_SES);
   stopTimer();
   if(SA)setTimeout(flushResults,50);
@@ -1263,7 +1340,7 @@ function liveAnswered(p){
   const c=document.getElementById('ansc');if(c)c.textContent=ansCount(s)+' / '+s.qs.length+' answered';
   const cl=document.querySelector('[data-act="clear"]');if(cl)cl.disabled=!a;
 }
-const openClasses=()=>W.classes.filter(c=>openExams(c).length);
+const openClasses=()=>W.classes.filter(c=>c.locked?c.hasOpen:openExams(c).length);
 function subjLabel(c,e){
   const dup=openExams(c).filter(x=>x.subject===e.subject).length>1;
   return e.subject+(dup?' ('+e.title+')':'');
@@ -1288,9 +1365,10 @@ function viewHome(){
       return '<option value="'+esc(e.id)+'"'+(e.id===f.eid?' selected':'')+(done?' disabled':'')+'>'+esc(subjLabel(c,e))+(done?' (already written)':'')+'</option>';
     }).join(''):'')+'</select></label>';
     const code=c&&c.code?'<label class="f">Access code<span class="hint">Given by your invigilator</span><input id="f-code" type="text" data-bind="form.code" value="'+esc(f.code)+'" autocomplete="off"></label>':'';
-    form='<form class="form" data-form="check" autocomplete="off">'+selClass+selName+selSub+code+
+    const ucode=c&&c.locked?'<label class="f">Access code<span class="hint">Given by your teacher or invigilator</span><input id="f-ucode" type="text" data-bind="form.ucode" value="'+esc(f.ucode)+'" autocomplete="off" autocapitalize="characters"></label>':'';
+    form='<form class="form" data-form="check" autocomplete="off">'+selClass+(c&&c.locked?ucode:selName+selSub+code)+
       (S.err?'<div class="err" role="alert">'+esc(S.err)+'</div>':'')+
-      '<button class="btn primary" type="submit" data-act="check">Continue</button></form>';
+      '<button class="btn primary" type="submit" data-act="check">'+(c&&c.locked?'Open class':'Continue')+'</button></form>';
   }
   return topBar('<button class="btn small ghost" data-act="staff">Examiner</button>')+
   '<div class="home"><section class="card"><div class="lead"><span class="eyebrow">Candidate sign-in</span><h1>Start your test</h1><p class="muted">Choose your class, find your name, then pick the subject you are writing.</p></div>'+form+'</section>'+
@@ -1415,14 +1493,15 @@ function viewLogin(){
 function staffBar(){
   const st=S.st;
   const cur=k=>k==='classes'?(st.page==='classes'||st.page==='class'||st.page==='child'):st.page===k;
-  const nav=(ME?[['classes','Classes']]:[['classes','Classes']].concat(hasTier('growth')&&SA&&SRVS.on?[['teachers','Teachers']]:[],[['setup','Publish and backup']])).map(([k,l])=>'<button class="navlink" data-act="spage" data-p="'+k+'" aria-current="'+(cur(k)?'page':'false')+'">'+l+'</button>').join('');
+  const bk=hasTier('growth')&&SA&&SRVS.on?[['bank','Question bank']]:[];
+  const nav=(ME?[['classes','Classes']].concat(bk):[['classes','Classes']].concat(bk,hasTier('growth')&&SA&&SRVS.on?[['teachers','Teachers']]:[],[['setup','Publish and backup']])).map(([k,l])=>'<button class="navlink" data-act="spage" data-p="'+k+'" aria-current="'+(cur(k)?'page':'false')+'">'+l+'</button>').join('');
   return '<header class="top"><div class="brand">'+markSvg+'<div><b>ExamDesk</b><small>'+esc(W.school||'Examiner')+'</small></div></div><nav class="snav">'+nav+'</nav>'+
   '<div class="top-actions"><span id="dirty-badge" class="badge warn"'+(dirty?'':' hidden')+'>'+(SA?'Not in page file yet':'Unpublished changes')+'</span><button class="btn small" data-act="home">Candidate screen</button><button class="btn small" data-act="logout">'+(ME?'Sign out':'Lock')+'</button></div></header>'+(ME?'<div class="note" style="margin:0 0 14px">Signed in as <b>'+esc(ME.name)+'</b>. You see only the classes and subjects assigned to you.</div>':'');
 }
 function viewStaff(){
   const st=S.st;
   if(!st.authed)return viewLogin();
-  const body=st.page==='class'?pageClass():st.page==='child'?pageChild():(st.page==='setup'&&!ME)?pageSetup():(st.page==='teachers'&&!ME&&hasTier('growth'))?pageTeachers():pageClasses();
+  const body=st.page==='class'?pageClass():st.page==='child'?pageChild():(st.page==='setup'&&!ME)?pageSetup():(st.page==='teachers'&&!ME&&hasTier('growth'))?pageTeachers():(st.page==='bank'&&hasTier('growth'))?pageBank():pageClasses();
   return staffBar()+
     (st.flash?'<div class="okbox" style="margin-bottom:14px" role="status">'+esc(st.flash)+'</div>':'')+
     (st.err?'<div class="err" style="margin-bottom:14px" role="alert">'+esc(st.err)+'</div>':'')+
@@ -1447,6 +1526,7 @@ function pageClasses0(){
   const bulk=st.bulk?bulkPreview():'';
   return '<div class="page-head"><div><span class="eyebrow">Examiner</span><h1>Classes</h1></div><p class="muted">Open a class to upload its class list and papers, and to see results child by child.</p></div>'+
   '<div class="cls-grid">'+(cards||emptyBox('Nothing assigned to you yet','Ask the school administrator to assign you a class or subject.'))+'</div>'+
+  ((ME||!(SA&&SRVS.on))?'':'<section class="card stack" style="margin-top:22px"><div><h2>Candidate device</h2><p class="muted" style="margin-top:4px">Open all classes on <b>this</b> device so children can pick their names without a code. Do this on each computer or tablet used for the test, then press Lock.'+(devReady().length?' <b>Ready now</b> for '+devReady().length+' class'+(devReady().length===1?'':'es')+'.':'')+'</p></div><div class="row"><button class="btn primary" data-act="dev-setup"'+(st.busy?' disabled':'')+'>'+(devReady().length?'Refresh this device':'Set up this device for candidates')+'</button>'+(devReady().length?'<button class="btn" data-act="dev-clear">Remove from this device</button>':'')+'</div></section>')+
   (ME?'':'<div class="stack" style="margin-top:22px"><section class="card stack"><div><h2>Add a class</h2></div>'+
   '<form class="row" data-form="addclass" autocomplete="off"><label class="f" style="flex:1 1 220px"><span class="hint">Class name</span><input id="f-newclass" type="text" data-bind="st.newClass" value="'+esc(st.newClass)+'" placeholder="For example, Basic 6"></label><button class="btn primary" type="submit" data-act="addclass" style="align-self:end">Add class</button></form></section>'+
   '<section class="card stack"><div><h2>Import class lists from one workbook</h2><p class="muted" style="margin-top:4px">One sheet per class. A sheet named like an existing class fills that class. Other sheets can become new classes.</p></div>'+
@@ -1471,9 +1551,9 @@ function pageClass(){
   const pr=classProgress(c),open=c.exams.filter(e=>e.open).length;
   const wr=c.exams.some(e=>e.questions.some(q=>qType(q)!=='obj'&&qMarkable(q)));
   let provN=0;if(wr)c.roster.concat(classNames(c).orphans).forEach(n=>c.exams.forEach(e=>{const x=resFor(c.id,n,e.id);if(x&&x.prov)provN++;}));
-  let tabs=[['register','Register'],['papers','Papers ('+c.exams.length+')']].concat(wr?[['marking','Marking'+(provN?' ('+provN+')':'')]]:[],[['list','Class list ('+c.roster.length+')'],['analysis','Analysis'],['csettings','Settings']]);
+  let tabs=[['register','Register'],['papers','Papers ('+c.exams.length+')']].concat(wr?[['marking','Marking'+(provN?' ('+provN+')':'')]]:[],[['list','Class list ('+c.roster.length+')'],['analysis','Analysis']],hasTier('growth')&&!ME?[['report','Report cards']]:[],[['csettings','Settings']]);
   if(ME){tabs=tabs.filter(t=>['register','marking','analysis'].includes(t[0]));if(!tabs.some(t=>t[0]===st.tab))st.tab='register';}
-  const body=st.tab==='marking'?tabMarking(c):st.tab==='papers'?tabPapers(c):st.tab==='list'?tabList(c):st.tab==='analysis'?tabAnalysis(c):st.tab==='csettings'?tabCSettings(c):tabRegister(c);
+  const body=st.tab==='marking'?tabMarking(c):st.tab==='papers'?tabPapers(c):st.tab==='list'?tabList(c):st.tab==='analysis'?tabAnalysis(c):st.tab==='csettings'?tabCSettings(c):st.tab==='report'?tabReport(c):tabRegister(c);
   return '<div style="'+acStyle(c)+'"><button class="btn small ghost" data-act="spage" data-p="classes" style="margin-bottom:8px">← All classes</button>'+
   '<div class="cls-top"><div class="grow"><span class="eyebrow">Class</span><h1>'+esc(c.name)+'</h1></div><div class="nums"><span><b>'+c.roster.length+'</b><small>children</small></span><span><b>'+c.exams.length+'</b><small>papers ('+open+' open)</small></span><span><b>'+pr.got+'/'+pr.possible+'</b><small>papers written</small></span></div></div>'+
   '<div class="tabs" role="tablist">'+tabs.map(t=>'<button class="tab" role="tab" aria-selected="'+(st.tab===t[0])+'" data-act="ctab" data-t="'+t[0]+'">'+t[1]+'</button>').join('')+'</div>'+body+'</div>';
@@ -1520,8 +1600,9 @@ function tabPapers(c){
       '<label class="f">Pass mark (%)<input type="number" min="0" max="100" data-ex="'+esc(ex.id)+'" data-k="passMark" value="'+ex.passMark+'"></label></div>'+
       '<div class="stack" style="gap:8px">'+chk('shuffleQ','Shuffle question order inside each section')+chk('shuffleO','Shuffle option order for each child')+chk('showResult','Show the score to the child after submitting')+chk('showReview','Show the answer review after submitting')+'</div>'+
       (ex.questions.some(q=>qType(q)==='theory')?'<label class="f" style="margin-top:12px">Theory answers<select data-ex="'+esc(ex.id)+'" data-k="theoryMode"><option value="online"'+(ex.theoryMode!=='paper'?' selected':'')+'>Typed by the child on the computer</option><option value="paper"'+(ex.theoryMode==='paper'?' selected':'')+'>Written on paper, marks entered by the teacher</option></select></label>':'')+
+      (hasTier('growth')&&!ME?'<label class="f" style="margin-top:12px">Counts on the report card as<select data-ex="'+esc(ex.id)+'" data-k="term"><option value=""'+(!ex.term?' selected':'')+'>Not on the report card</option><option value="mid"'+(ex.term==='mid'?' selected':'')+'>Mid-term score</option><option value="end"'+(ex.term==='end'?' selected':'')+'>End-of-term exam</option></select></label>':'')+
       '<ol class="qlist" style="margin-top:14px">'+ex.questions.map((q,i)=>qPreview(q,i)).join('')+'</ol>'+
-      '<div class="row" style="margin-top:14px">'+(st.conf==='del:'+ex.id?'<button class="btn danger small" data-act="del-exam" data-id="'+esc(ex.id)+'">Yes, delete this paper</button><button class="btn small" data-act="conf-no">Cancel</button>':'<button class="btn danger small" data-act="del-exam" data-id="'+esc(ex.id)+'">Delete paper</button>')+'</div></details></article>';
+      '<div class="row" style="margin-top:14px">'+(hasTier('growth')&&SA&&SRVS.on&&!ME?'<button class="btn small" data-act="bank-save-exam" data-id="'+esc(ex.id)+'">Save to the question bank</button>':'')+(st.conf==='del:'+ex.id?'<button class="btn danger small" data-act="del-exam" data-id="'+esc(ex.id)+'">Yes, delete this paper</button><button class="btn small" data-act="conf-no">Cancel</button>':'<button class="btn danger small" data-act="del-exam" data-id="'+esc(ex.id)+'">Delete paper</button>')+'</div></details></article>';
   }).join(''):'<section class="card">'+emptyBox('No papers in '+c.name+' yet','Upload the CBT .docx or paste the text below. New papers stay closed until you open them.')+'</section>';
   const imp=st.imp?impPreview(c):'';
   return '<div class="stack">'+list+
@@ -1562,6 +1643,12 @@ function tabList(c){
   '<div class="row"><button class="btn primary" data-act="save-roster">Save names</button></div></section>'+(hasTier('growth')&&!ME?armsCard(c):'')+'</div>';
 }
 
+
+function armsCard(c){
+  const arms=c.arms||[];
+  const rows=arms.length?'<div class="scroll" style="max-height:340px"><table><thead><tr><th>Name</th><th>Arm</th></tr></thead><tbody>'+c.roster.map(n=>'<tr><td>'+esc(n)+'</td><td><select data-arm="'+esc(n)+'" aria-label="Arm for '+esc(n)+'"><option value="">–</option>'+arms.map(a=>'<option'+(armOf(c,n)===a?' selected':'')+'>'+esc(a)+'</option>').join('')+'</select></td></tr>').join('')+'</tbody></table></div>':'';
+  return '<section class="card stack"><div><h2>Arms</h2><p class="muted" style="margin-top:4px">Split this class into arms, for example A, B, C, then place each child in one. A form teacher can be given a single arm. Leave this empty if the class is not split.</p></div><label class="f">Arm names<span class="hint">Separated by commas</span><input id="c-arms" type="text" data-cl="arms" value="'+esc(arms.join(', '))+'" placeholder="A, B"></label>'+rows+'</section>';
+}
 
 function rosterPreview(c){
   const r=S.st.rimp;
@@ -1610,9 +1697,175 @@ function tabCSettings(c){
   return '<div class="stack"><section class="card stack"><h2>Class settings</h2>'+
     '<label class="f">Class name<input id="c-name" type="text" data-cl="name" value="'+esc(c.name)+'"></label>'+
     '<div class="f"><span style="font-weight:600;font-size:.9rem">Colour</span><div class="hue">'+[1,2,3,4,5,6].map(h=>'<button type="button" data-act="hue" data-h="'+h+'" aria-pressed="'+(c.hue===h)+'" aria-label="Colour '+h+'" style="background:var(--h'+h+')"></button>').join('')+'</div></div>'+
-    '<label class="f">Access code<span class="hint">Children must type this to continue. Leave empty for none.</span><input id="c-code" type="text" data-cl="code" value="'+esc(c.code)+'" autocomplete="off"></label>'+
+    (SA&&SRVS.on?'<label class="f">Class access code<span class="hint">Children type this to open this class on their device. Without it nobody can see the class list.</span><span class="row" style="gap:8px"><input id="c-code" type="text" data-cl="code" value="'+esc(c.code)+'" autocomplete="off" style="flex:1"><button class="btn small" type="button" data-act="newcode">New code</button></span></label>':'<label class="f">Access code<span class="hint">Children must type this to continue. Leave empty for none.</span><input id="c-code" type="text" data-cl="code" value="'+esc(c.code)+'" autocomplete="off"></label>')+
     '<label class="check"><input type="checkbox" id="c-rank" data-cl="showRank"'+(c.showRank?' checked':'')+'>Show class positions (only for children who have written every paper)</label></section>'+
     '<section class="card stack"><h2>Delete class</h2><p class="muted">Removes the class, its list and its papers from the setup. Results already saved on devices stay there but no longer appear.</p><div class="row">'+(st.conf==='dc:'+c.id?'<button class="btn danger small" data-act="del-class">Yes, delete '+esc(c.name)+'</button><button class="btn small" data-act="conf-no">Cancel</button>':'<button class="btn danger small" data-act="del-class">Delete class</button>')+'</div></section></div>';
+}
+
+
+/* ---------- Report cards (Growth and above): mid-term and end-of-term cards, printed from this page ---------- */
+const RC_DEF={addr:'',phone:'',email:'',web:'',logo:'',pills:'',director:'',dirTitle:'DIRECTOR',termName:'FIRST TERM',year:'',next:'',wMid:40,wEnd:60};
+const rcCfg=()=>Object.assign({},RC_DEF,W.report||{});
+const REMARK={A:'Excellent',B:'Very good',C:'Good',D:'Fair',E:'Pass',F:'Fail'};
+const ordN=n=>{const t=['th','st','nd','rd'],v=n%100;return n+(t[(v-20)%10]||t[v]||t[0]);};
+const rcSt=()=>{const st=S.st;return st.rc=st.rc||{kind:'end',open:'',msg:'',err:'',prev:''};};
+/* Passport photos stay on this computer (not in the shared setup), so the setup stays small. */
+let PH=new Map();
+function idbOpen(){return new Promise((res,rej)=>{try{const q=indexedDB.open('xd2photos',1);q.onupgradeneeded=()=>q.result.createObjectStore('p');q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error);}catch(e){rej(e);}});}
+async function phAll(){try{const d=await idbOpen();return await new Promise(res=>{const m=new Map(),q=d.transaction('p').objectStore('p').openCursor();q.onsuccess=()=>{const c=q.result;if(c){m.set(c.key,c.value);c.continue();}else res(m);};q.onerror=()=>res(m);});}catch(e){return new Map(PH);}}
+async function phSet(k,v){PH.set(k,v);try{const d=await idbOpen();await new Promise(r=>{const t=d.transaction('p','readwrite');t.objectStore('p').put(v,k);t.oncomplete=r;t.onerror=r;});}catch(e){}}
+async function phDel(k){PH.delete(k);try{const d=await idbOpen();await new Promise(r=>{const t=d.transaction('p','readwrite');t.objectStore('p').delete(k);t.oncomplete=r;t.onerror=r;});}catch(e){}}
+const phKey=(c,n)=>c.id+'|'+nk(n);
+function imgData(file,mode){return new Promise((res,rej)=>{const u=URL.createObjectURL(file),im=new Image();
+  im.onload=()=>{try{const cv=document.createElement('canvas'),x=cv.getContext('2d');
+    if(mode==='photo'){const px=400,sq=Math.min(im.width,im.height);cv.width=cv.height=px;x.fillStyle='#fff';x.fillRect(0,0,px,px);x.drawImage(im,(im.width-sq)/2,(im.height-sq)*0.2,sq,sq,0,0,px,px);URL.revokeObjectURL(u);res(cv.toDataURL('image/jpeg',0.82));}
+    else{const k=Math.min(1,300/im.width,160/im.height);cv.width=Math.max(1,Math.round(im.width*k));cv.height=Math.max(1,Math.round(im.height*k));x.drawImage(im,0,0,cv.width,cv.height);URL.revokeObjectURL(u);res(cv.toDataURL('image/png'));}}catch(e){rej(e);}};
+  im.onerror=()=>{URL.revokeObjectURL(u);rej(new Error('image'));};im.src=u;});}
+const rcKid=(c,n)=>((c.kids||{})[nk(n)])||{};
+const rcR1=v=>Math.round(v*10)/10;
+/* the numbers on one child's card */
+function rcData(c,name,kind){
+  const cf=rcCfg(),mids=c.exams.filter(e=>e.term==='mid'),ends=c.exams.filter(e=>e.term==='end');
+  const wMid=kind==='mid'?cf.wMid:(mids.length?cf.wMid:0),wEnd=kind==='mid'?0:(mids.length?cf.wEnd:100);
+  const subs=[];
+  (kind==='mid'?mids:mids.concat(ends)).forEach(e=>{if(!subs.some(x=>nk(x)===nk(e.subject)))subs.push(e.subject);});
+  const part=(list,w)=>{if(!w||!list.length)return {v:undefined};
+    const rs=list.map(e=>resFor(c.id,name,e.id)).filter(Boolean);
+    if(rs.length<list.length)return {v:null};
+    const sc=rs.reduce((a,r)=>a+r.score,0),to=rs.reduce((a,r)=>a+r.total,0);
+    return {v:to?rcR1(sc/to*w):0,prov:rs.some(r=>r.prov)};};
+  const rows=subs.map(sj=>{
+    const m=part(mids.filter(e=>nk(e.subject)===nk(sj)),wMid),en=part(ends.filter(e=>nk(e.subject)===nk(sj)),wEnd);
+    const need=[wMid&&mids.some(e=>nk(e.subject)===nk(sj)),wEnd&&ends.some(e=>nk(e.subject)===nk(sj))].filter(Boolean).length;
+    const got=[m.v,en.v].filter(v=>typeof v==='number');
+    const tot=got.length&&got.length===Math.max(need,1)?rcR1(got.reduce((a,b)=>a+b,0)):null;
+    return {subject:sj,mid:m.v,end:en.v,tot,prov:!!(m.prov||en.prov)};});
+  const complete=rows.length>0&&rows.every(r=>r.tot!=null);
+  const per=wMid+wEnd,obt=rows.length*per,total=complete?rcR1(rows.reduce((a,r)=>a+r.tot,0)):null;
+  return {rows,wMid,wEnd,complete,obt,total,avg:complete&&obt?rcR1(total/obt*100):null,prov:rows.some(r=>r.prov),missing:rows.filter(r=>r.tot==null).length};
+}
+function rcPosition(c,name,kind){
+  const all=c.roster.map(n=>({n,d:rcData(c,n,kind)})).filter(x=>x.d.complete).sort((a,b)=>b.d.total-a.d.total);
+  let rank=0,prev=null,seen=0,mine=0;
+  all.forEach(x=>{seen++;if(x.d.total!==prev){rank=seen;prev=x.d.total;}if(nk(x.n)===nk(name))mine=rank;});
+  return mine?{rank:mine,of:all.length}:null;
+}
+const RC_CSS="@page{size:A4;margin:0}*{box-sizing:border-box}body{margin:0;font:11.5px/1.35 Arial,Helvetica,sans-serif;color:#111}.page{position:relative;width:210mm;height:296mm;padding:12mm 14mm;page-break-after:always;overflow:hidden}header{display:flex;align-items:center;justify-content:center;gap:12px}header img{max-height:20mm;max-width:40mm}h1{margin:0;font-size:26px;color:#2a4d8f;text-align:center}.pills{display:flex;gap:14px;justify-content:center;margin-top:6px}.pills span{border:1.5px solid #222;border-radius:7px;padding:3px 16px;font-weight:700;font-size:10.5px}.p0{background:#fff176}.p1{background:#f8bbd0}.p2{background:#a5f58f}.addr{text-align:center;margin:8px 0 6px;font-size:10.5px}h2{text-align:center;margin:8px 0 0;font-size:16px}h3{text-align:center;margin:2px 0 10px;font-size:13px}.grid{display:grid;grid-template-columns:62mm 1fr;gap:8mm;align-items:start}.ph{width:40.6mm;height:40.6mm;border:1px solid #222;margin:2px auto 12px;overflow:hidden;background:#f2f4f8;color:#9aa3b5;font-size:9px;display:flex;align-items:center;justify-content:center;text-align:center}.ph img{width:100%;height:100%;object-fit:cover}.left{border:1px solid #222;padding:10px 10px 12px}.id p{margin:4px 0}.cap{text-align:center;font-weight:700;margin-bottom:4px}table.sub{width:100%;border-collapse:collapse}.sub th,.sub td{border:1px solid #222;padding:4px 6px}.sub th{background:#eef2fa;font-size:10.5px;text-align:left}.sub th span{font-weight:400}.c{text-align:center}.b{font-weight:700}.tot td{font-weight:700;background:#f4f6fa}.sum{border:1px solid #222;margin-top:8px;padding:6px 10px;display:grid;gap:5px}.cm{border:1px solid #222;padding:6px 10px;margin-top:10px}.cm p{margin:5px 0}.key{font-size:10px;margin:8px 0 0;text-align:center}.dir{text-align:center;margin-top:16px;font-weight:700}.dir .line{width:55mm;border-top:1px solid #222;margin:26px auto 4px}.prov{font-size:9.5px;margin-top:4px}";
+function rcCard(c,name,kind){
+  const cf=rcCfg(),d=rcData(c,name,kind),k=rcKid(c,name),end=kind==='end',E=esc;
+  const num=v=>v==null?'—':(v===undefined?'':fmtN(v));
+  const rows=d.rows.map(r=>{const g=r.tot!=null?gradeOf(r.tot/(d.wMid+d.wEnd)*100):'';
+    const star=r.prov?'*':'';
+    return end?'<tr><td>'+E(r.subject)+'</td>'+(d.wMid?'<td class="c">'+num(r.mid)+'</td>':'')+'<td class="c">'+num(r.end)+star+'</td><td class="c b">'+num(r.tot)+'</td><td class="c">'+g+'</td><td>'+(g?REMARK[g]:'')+'</td></tr>':'<tr><td>'+E(r.subject)+'</td><td class="c b">'+num(r.mid)+star+'</td></tr>';}).join('');
+  const head=end?'<tr><th>SUBJECTS</th>'+(d.wMid?'<th class="c">MID-TERM<br><span>'+d.wMid+'%</span></th>':'')+'<th class="c">END-TERM EXAM<br><span>'+d.wEnd+'%</span></th><th class="c">TOTAL<br><span>'+(d.wMid+d.wEnd)+'%</span></th><th class="c">GRADE</th><th>REMARK</th></tr>':'<tr><th>SUBJECTS</th><th class="c">SCORE<br><span>'+d.wMid+'%</span></th></tr>';
+  const sm=d.complete?rcR1(d.rows.reduce((a,r)=>a+(r.mid||0),0)):null,se=d.complete?rcR1(d.rows.reduce((a,r)=>a+(r.end||0),0)):null;
+  const foot=end?'<tr class="tot"><td>TOTAL</td>'+(d.wMid?'<td class="c">'+(sm==null?'':fmtN(sm))+'</td>':'')+'<td class="c">'+(se==null?'':fmtN(se))+'</td><td class="c">'+(d.total==null?'':fmtN(d.total))+'</td><td></td><td></td></tr>':'<tr class="tot"><td>TOTAL</td><td class="c">'+(d.total==null?'':fmtN(d.total))+'</td></tr>';
+  const pos=c.showRank&&d.complete?rcPosition(c,name,kind):null;
+  const pills=String(cf.pills||'').split(',').map(x=>x.trim()).filter(Boolean).slice(0,3).map((x,i)=>'<span class="p'+i+'">'+E(x.toUpperCase())+'</span>').join('');
+  const photo=PH.get(phKey(c,name));
+  const contact=[cf.phone?'<b>'+E(cf.phone)+'</b>':'',(cf.email||cf.web)?(cf.email?'<b>EMAIL:</b> '+E(cf.email):'')+(cf.email&&cf.web?' &nbsp; ':'')+(cf.web?'<b>WEBSITE:</b> '+E(cf.web):''):''].filter(Boolean).join('<br>');
+  return '<section class="page"><header>'+(cf.logo?'<img src="'+E(cf.logo)+'" alt="">':'')+'<div><h1>'+E((W.school||'School name').toUpperCase())+'</h1>'+(pills?'<div class="pills">'+pills+'</div>':'')+'</div></header>'+
+  '<p class="addr">'+(cf.addr?'<b>'+E(cf.addr.toUpperCase())+'</b><br>':'')+contact+'</p>'+
+  '<h2>'+(end?'END-OF-TERM PROGRESS REPORT':'MID-TERM PROGRESS REPORT')+'</h2><h3>'+E(cf.termName)+(cf.year?' &nbsp; '+E(cf.year)+' ACADEMIC YEAR':'')+'</h3>'+
+  '<div class="grid"><div class="left"><div class="ph">'+(photo?'<img src="'+E(photo)+'" alt="">':'PASSPORT PHOTO')+'</div><div class="id"><p><b>NAME:</b> '+E(name.toUpperCase())+'</p><p><b>CLASS:</b> '+E(c.name.toUpperCase())+'</p>'+(k.age?'<p><b>AGE:</b> '+E(k.age.toUpperCase())+'</p>':'')+(k.reg?'<p><b>REG. NO:</b> '+E(k.reg)+'</p>':'')+(c.teacher?'<p><b>TEACHER:</b> '+E(String(c.teacher).toUpperCase())+'</p>':'')+'</div></div>'+
+  '<div class="right"><div class="cap">PERFORMANCE IN SUBJECTS</div><table class="sub">'+head+rows+foot+'</table>'+(d.prov?'<div class="prov">* This mark has not been confirmed by the teacher yet.</div>':'')+
+  '<div class="sum"><div><b>MARKS OBTAINABLE:</b> '+d.obt+'</div><div><b>PUPIL’S TOTAL SCORE:</b> '+(d.total==null?'':fmtN(d.total))+'</div><div><b>PUPIL’S AVERAGE:</b> '+(d.avg==null?'':fmtN(d.avg)+'%')+'</div>'+(pos?'<div><b>POSITION IN CLASS:</b> '+ordN(pos.rank)+' of '+pos.of+'</div>':'')+'</div></div></div>'+
+  '<div class="cm"><p><b>CLASS TEACHER’S COMMENT:</b> '+E(k.tc||'')+'</p><p><b>SIGNED:</b> ________ &nbsp;&nbsp; <b>DATE:</b> ________</p><p><b>HEAD TEACHER’S COMMENT:</b> '+E(k.hc||'')+'</p><p><b>SIGNED:</b> ________ &nbsp;&nbsp; <b>DATE:</b> ________</p></div>'+
+  (end?'<p class="key"><b>GRADE KEY:</b> A 70–100 Excellent · B 60–69 Very good · C 50–59 Good · D 45–49 Fair · E 40–44 Pass · F 0–39 Fail'+(cf.next?' &nbsp; | &nbsp; <b>NEXT TERM BEGINS:</b> '+E(cf.next):'')+'</p>':(cf.next?'<p class="key"><b>NEXT TERM BEGINS:</b> '+E(cf.next)+'</p>':''))+
+  '<div class="dir"><div class="line"></div>'+E((cf.director||'').toUpperCase())+(cf.director?'<br>':'')+E(cf.dirTitle)+'</div></section>';
+}
+/* ---------- the child's answer script: the school's paper layout with this child's answers, marks and the correct answers ---------- */
+const AS_CSS="@page{size:A4;margin:14mm}*{box-sizing:border-box}body{margin:0;font:12px/1.4 'Times New Roman',Times,serif;color:#111}.sc{page-break-after:always}.sc:last-child{page-break-after:auto}header{text-align:center}header img{max-height:18mm;max-width:40mm}h1{margin:2px 0;font-size:20px;text-transform:uppercase}.ad{font-size:11px;margin:0 0 6px}h2{text-align:center;margin:8px 0;font-size:14px;text-transform:uppercase}.id{display:flex;flex-wrap:wrap;gap:4px 22px;border-top:1.5px solid #111;border-bottom:1.5px solid #111;padding:5px 0;margin:6px 0 8px;font-weight:700}.sum{display:flex;gap:18px;flex-wrap:wrap;border:1.5px solid #111;padding:5px 10px;margin-bottom:8px;font-weight:700}.sh{font-weight:700;text-transform:uppercase;margin:12px 0 4px;border-bottom:1px solid #111;display:flex;justify-content:space-between}.q{margin:7px 0;page-break-inside:avoid}.q p{margin:0 0 2px;white-space:pre-line}.mk{float:right;font-weight:700;margin-left:10px;white-space:nowrap}.mk.g{color:#1a7a35}.mk.b{color:#b3261e}.opts{display:flex;flex-wrap:wrap;gap:1px 18px;margin:2px 0 0 18px}.opts span{white-space:nowrap}.pick{font-weight:700;text-decoration:underline}.right{color:#1a7a35;font-weight:700}.wrong{color:#b3261e}.ans{margin:2px 0 0 18px}.box{border:1px solid #888;padding:4px 7px;margin:3px 0 0 18px;white-space:pre-wrap;min-height:18px}.cor{margin:2px 0 0 18px;color:#1a7a35;font-weight:700}.note{font-size:10.5px;margin-top:8px}";
+function asDoc(c,names,eid){
+  const ex=c.exams.find(e=>e.id===eid);if(!ex)return '';
+  const cf=rcCfg(),E=esc,L='abcdefghijklmnopqrstuvwxyz';
+  const one=name=>{
+    const r=resFor(c.id,name,eid);
+    const head='<header>'+(cf.logo?'<img src="'+E(cf.logo)+'" alt="">':'')+'<h1>'+E(W.school||'School name')+'</h1>'+(cf.addr?'<p class="ad">'+E(cf.addr)+'</p>':'')+'</header>'+
+      '<h2>'+E([cf.termName,ex.title].filter(Boolean).join(' — '))+(cf.year?' ('+E(cf.year)+')':'')+'</h2>'+
+      '<div class="id"><span>NAME: '+E(name.toUpperCase())+'</span><span>CLASS: '+E(c.name.toUpperCase())+'</span><span>SUBJECT: '+E(String(ex.subject||'').toUpperCase())+'</span><span>DATE: '+(r?E(new Date(r.submittedAt).toLocaleDateString('en-GB')):'')+'</span></div>';
+    if(!r)return '<section class="sc">'+head+'<p>'+E(name)+' has no submitted answers for this paper.</p></section>';
+    const m=markExam(ex,r.ans||{},r.txt||{},MK[r.id]||null);
+    const n=ex.questions.length;
+    let ord=Array.isArray(r.ord)?r.ord.filter(i=>Number.isInteger(i)&&i>=0&&i<n):[];
+    if(!ord.length)ord=ex.questions.map((q,i)=>i);
+    const stale=r.sig!==sigOf(ex);
+    const sum='<div class="sum"><span>SCORE: '+fmtN(m.score)+' / '+fmtN(m.total)+'</span><span>'+m.pct+'%</span><span>GRADE: '+m.grade+'</span>'+(m.prov?'<span>(provisional — written answers not yet marked)</span>':'')+'</div>';
+    let out='',sec=null,num=0;
+    ord.forEach(qi=>{
+      const q=ex.questions[qi];if(!q)return;
+      if(q.section!==sec){sec=q.section;const sm=m.secs.find(x=>x.name===(sec||''));out+='<div class="sh"><span>'+E(sec||'')+'</span>'+(sm&&sm.max?'<span>'+fmtN(sm.got)+' / '+fmtN(sm.max)+'</span>':'')+'</div>';}
+      num++;
+      const pt=m.parts.find(x=>x.qi===qi),t=qType(q),lab=num+'. ';
+      const mk=pt?'<span class="mk '+(pt.got>=pt.max?'g':(pt.got>0?'':'b'))+'">'+fmtN(pt.got)+'/'+fmtN(pt.max)+(pt.got>=pt.max?' ✓':pt.got>0?'':' ✗')+'</span>':'';
+      if(t==='fib'){
+        const given=(r.txt&&r.txt[qi])||[],g=Array.isArray(given)?given:[given];
+        const ok=pt&&pt.got>=pt.max;
+        out+='<div class="q">'+mk+'<p>'+lab+E(q.text)+'</p><div class="ans">Answer given: <span class="'+(ok?'right':'wrong')+'">'+(g.some(x=>String(x||'').trim())?E(g.map(x=>x||'–').join('; ')):'no answer')+'</span></div>'+(ok||!q.answers?'':'<div class="cor">Correct: '+E(q.answers.map(a=>a[0]).join('; '))+'</div>')+'</div>';
+        return;
+      }
+      if(t==='theory'){
+        const v=String((r.txt&&r.txt[qi])||'').trim();
+        out+='<div class="q">'+(pt&&(pt.state==='unmarked'||pt.state==='suggested')?'<span class="mk">not yet marked /'+fmtN(pt.max)+'</span>':mk)+'<p>'+lab+E(q.text)+'</p><div class="box">'+(v?E(v):'<i>No answer</i>')+'</div></div>';
+        return;
+      }
+      const perm=(r.perm&&r.perm[qi])||q.options.map((o,k)=>k);
+      const chosen=(r.ans&&r.ans[qi])||[];
+      const ok=pt&&pt.got>=pt.max;
+      const opts=perm.map((orig,k)=>{
+        const o=q.options[orig];if(!o)return '';
+        const on=chosen.includes(orig);
+        let cls='',mark='';
+        if(on&&o.c){cls='pick right';mark=' ✓';}else if(on){cls='pick wrong';mark=' ✗';}else if(o.c&&!ok){cls='right';mark=' ✓';}
+        return '<span class="'+cls+'">('+L[k]+') '+E(o.t)+mark+'</span>';
+      }).join('');
+      out+='<div class="q">'+mk+'<p>'+lab+E(q.text)+'</p><div class="opts">'+opts+'</div>'+(chosen.length?'':'<div class="ans wrong">No answer</div>')+'</div>';
+    });
+    return '<section class="sc">'+head+sum+out+'<p class="note">Underlined = the answer given. ✓ right, ✗ wrong; the correct answer is shown in green. Questions are in the order this pupil saw them.'+(stale?' This paper was edited after the pupil sat it, so some marks may differ from what was awarded.':'')+'</p></section>';
+  };
+  return '<!doctype html><meta charset="utf-8"><title>'+E(ex.title+' answer scripts')+'</title><style>'+AS_CSS+'</style>'+names.map(one).join('');
+}
+
+const rcDoc=(c,names,kind)=>'<!doctype html><meta charset="utf-8"><title>'+esc(c.name+' report cards')+'</title><style>'+RC_CSS+'</style>'+names.map(n=>rcCard(c,n,kind)).join('');
+function rcPrint(html){
+  if(window.__xdPrintHook)return window.__xdPrintHook(html);
+  const f=document.createElement('iframe');f.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';document.body.appendChild(f);
+  const d=f.contentWindow.document;d.open();d.write(html);d.close();
+  setTimeout(()=>{try{f.contentWindow.focus();f.contentWindow.print();}catch(e){}setTimeout(()=>f.remove(),120000);},400);
+}
+function asCard(c,names){
+  const rc=rcSt(),exs=c.exams;
+  if(!exs.length)return '';
+  const eid=exs.some(e=>e.id===rc.script)?rc.script:exs[0].id;
+  const done=names.filter(n=>resFor(c.id,n,eid));
+  return '<section class="card stack"><h3>Answer scripts</h3><p class="muted sm">A printout of the paper with the pupil’s own answers, the marks for each question and the correct answers, in the order that pupil saw them.</p><div class="row" style="gap:10px;align-items:center"><label class="f" style="margin:0">Paper<select data-asel>'+exs.map(e=>'<option value="'+esc(e.id)+'"'+(e.id===eid?' selected':'')+'>'+esc(e.subject+' — '+e.title)+'</option>').join('')+'</select></label><button class="btn primary" data-act="as-printall" data-e="'+esc(eid)+'"'+(done.length?'':' disabled')+'>Print every pupil’s script ('+done.length+')</button></div>'+
+    '<div class="row" style="gap:6px;flex-wrap:wrap">'+names.map(n=>resFor(c.id,n,eid)?'<button class="btn small" data-act="as-print" data-e="'+esc(eid)+'" data-n="'+esc(n)+'">'+esc(n)+'</button>':'<span class="btn small" style="opacity:.45" title="Has not sat this paper">'+esc(n)+'</span>').join('')+'</div></section>';
+}
+function tabReport(c){
+  const st=S.st,rc=rcSt(),cf=rcCfg(),kind=rc.kind;
+  const names=classNames(c).roster;
+  const mids=c.exams.filter(e=>e.term==='mid'),ends=c.exams.filter(e=>e.term==='end');
+  const tagged=(kind==='mid'?mids:mids.concat(ends));
+  const fld=(k,l,ph,h)=>'<label class="f">'+l+(h?'<span class="hint">'+h+'</span>':'')+'<input type="text" data-rc="'+k+'" value="'+esc(cf[k])+'" placeholder="'+esc(ph||'')+'"></label>';
+  const setup='<details class="card"'+(rc.school||!(W.report&&W.report.addr)?' open':'')+'><summary style="cursor:pointer;font-weight:700">School details on the card (same for every class)</summary><div class="stack" style="margin-top:12px">'+
+    '<div class="setgrid"><label class="f">School name<span class="hint">Shown at the top. Set under Publish and backup.</span><input type="text" value="'+esc(W.school||'')+'" disabled></label>'+fld('addr','Address','5 School Road, Town, State')+fld('phone','Phone numbers','0800 000 0000, 0900 000 0000')+fld('email','Email','')+fld('web','Website','')+fld('pills','Section tags, up to three','Creche, Nursery, Primary','Separate with commas. Leave empty for none.')+
+    fld('termName','Term','FIRST TERM')+fld('year','Academic year','2026/2027')+fld('next','Next term begins','Monday 5 January 2027')+fld('director','Name above the signature line','')+fld('dirTitle','Title under it','DIRECTOR')+
+    '<label class="f">Mid-term marks out of<input type="number" min="1" max="100" data-rc="wMid" value="'+cf.wMid+'"></label><label class="f">End-term exam marks out of<input type="number" min="1" max="100" data-rc="wEnd" value="'+cf.wEnd+'"></label></div>'+
+    '<div class="row" style="gap:10px;align-items:center"><label class="btn small" style="cursor:pointer">'+(cf.logo?'Change logo':'Choose a logo')+'<input type="file" accept="image/*" id="rc-logo" hidden></label>'+(cf.logo?'<img src="'+esc(cf.logo)+'" alt="Logo" style="height:36px"><button class="btn small" data-act="rc-nologo">Remove</button>':'')+'</div></div></details>';
+  const warn=!tagged.length?'<div class="note">No paper is counted for this card yet. Open <b>Papers</b>, open a paper’s settings and choose <b>Counts on the report card as</b> (mid-term or end-of-term exam).</div>'
+    :'<p class="muted sm">Counted: '+tagged.map(e=>esc(e.subject)+' ('+(e.term==='mid'?'mid-term':'exam')+')').join(', ')+'. A card’s total and average appear once every subject has a mark.'+(kind==='end'&&!mids.length?' No paper is tagged mid-term, so the exam is shown out of 100.':'')+'</p>';
+  const rows=names.map(n=>{
+    const d=rcData(c,n,kind),k=rcKid(c,n),ph=PH.get(phKey(c,n));
+    const sts=!d.rows.length?'':d.complete?'<span class="badge ok">Complete'+(d.prov?' (provisional)':'')+'</span>':'<span class="badge warn">'+d.missing+' subject'+(d.missing===1?'':'s')+' missing</span>';
+    return '<article class="card stack" style="gap:8px"><div class="row" style="gap:12px;align-items:flex-start"><div style="width:64px;height:64px;border:1px solid #bbb;border-radius:6px;overflow:hidden;background:#f2f4f8;flex:none;display:flex;align-items:center;justify-content:center;font-size:10px;color:#889">'+(ph?'<img src="'+esc(ph)+'" alt="" style="width:100%;height:100%;object-fit:cover">':'No photo')+'</div>'+
+    '<div class="grow"><div class="row" style="justify-content:space-between"><b>'+esc(n)+'</b>'+sts+'</div><div class="row" style="gap:8px;margin-top:6px"><label class="btn small" style="cursor:pointer">'+(ph?'Change photo':'Add photo')+'<input type="file" accept="image/*" data-rcphoto="'+esc(n)+'" hidden></label>'+(ph?'<button class="btn small" data-act="rc-nophoto" data-n="'+esc(n)+'">Remove</button>':'')+'<button class="btn small" data-act="rc-prev" data-n="'+esc(n)+'">Preview</button><button class="btn small primary" data-act="rc-print" data-n="'+esc(n)+'">Print</button></div></div></div>'+
+    '<div class="setgrid"><label class="f">Age<input type="text" data-kid="age" data-n="'+esc(n)+'" value="'+esc(k.age||'')+'" placeholder="10 years"></label><label class="f">Reg. no<input type="text" data-kid="reg" data-n="'+esc(n)+'" value="'+esc(k.reg||'')+'"></label></div>'+
+    '<label class="f">Class teacher’s comment<textarea rows="2" data-kid="tc" data-n="'+esc(n)+'">'+esc(k.tc||'')+'</textarea></label><label class="f">Head teacher’s comment<textarea rows="2" data-kid="hc" data-n="'+esc(n)+'">'+esc(k.hc||'')+'</textarea></label></article>';}).join('');
+  const prev=rc.prev&&names.some(n=>nk(n)===nk(rc.prev))?'<section class="card stack"><div class="row" style="justify-content:space-between"><h3>Preview: '+esc(rc.prev)+'</h3><button class="btn small" data-act="rc-prevx">Close</button></div><div style="overflow:auto;border:1px solid #ccc;border-radius:6px"><iframe title="Card preview" style="width:210mm;height:297mm;border:0;transform-origin:top left" srcdoc="'+esc(rcDoc(c,[rc.prev],kind))+'"></iframe></div></section>':'';
+  return '<div class="stack"><section class="card stack"><h2>Report cards</h2><div class="row" style="gap:10px;align-items:center"><label class="f" style="margin:0">Card<select id="rc-kind" data-rckind><option value="end"'+(kind==='end'?' selected':'')+'>End-of-term (mid-term + exam)</option><option value="mid"'+(kind==='mid'?' selected':'')+'>Mid-term</option></select></label><label class="f" style="margin:0">Class teacher’s name<input type="text" data-clt="1" value="'+esc(c.teacher||'')+'"></label><button class="btn primary" data-act="rc-printall"'+(names.length?'':' disabled')+'>Print the whole class ('+names.length+')</button></div>'+warn+
+    '<p class="muted sm">Photos are kept on this computer, so add them and print from the same one. Print from your browser, choose “Save as PDF” if you want a file.</p>'+(rc.msg?'<div class="note">'+esc(rc.msg)+'</div>':'')+(rc.err?'<div class="err" role="alert">'+esc(rc.err)+'</div>':'')+'</section>'+setup+prev+
+    asCard(c,names)+
+    (names.length?rows:'<section class="card">'+emptyBox('The class list is empty','Add the children first.','')+'</section>')+'</div>';
 }
 
 /* --- one child --- */
@@ -1806,6 +2059,223 @@ function tabMarking(c){
 
 
 
+const tcSubjects=cid=>{const c=cls(cid),out=[];(c?c.exams:[]).forEach(e=>{if(!out.some(x=>nk(x)===nk(e.subject)))out.push(e.subject);});return out;};
+async function loadTeachers(){
+  const st=S.st,tc=st.tc=st.tc||{list:null,form:null,err:'',busy:false};
+  const h2=ses.get(K_H2);
+  tc.loading=true;tc.err='';
+  try{
+    const r=await srvFetch('/api/teachers',{headers:{'x-admin':h2||''}});
+    const j=await r.json().catch(()=>({}));
+    if(r.ok&&j.ok)tc.list=j.teachers;
+    else if(r.status===403)tc.err='This school’s plan does not include teacher accounts. Ask your ExamDesk provider about the Growth plan.';
+    else if(r.status===401)tc.err='Sign out and sign in again, then open this page.';
+    else tc.err='Teachers could not be loaded ('+r.status+').';
+  }catch(e){tc.err='Could not reach the server.';}
+  tc.loading=false;render();
+}
+function tcSummary(t){
+  const nm=id=>{const c=cls(id);return c?c.name:'(deleted class)';};
+  const f=(t.form||[]).map(x=>nm(x.cid)+(x.arm?' '+x.arm:'')).join(', ');
+  const sb=(t.subj||[]).map(x=>x.subject+' – '+nm(x.cid)).join(', ');
+  return '<td>'+(f?esc(f):'<span class="muted">–</span>')+'</td><td>'+(sb?esc(sb):'<span class="muted">–</span>')+'</td>';
+}
+/* ---------- Question bank (Growth and above): shared questions and AI drafts ---------- */
+function qToText(q,n){
+  const t=qType(q),mk=q.marks!=null?' ['+q.marks+(q.marks===1?' mark':' marks')+']':'';
+  let o=(n?n+'. ':'')+q.text+mk;
+  if(t==='obj')o+=(q.options||[]).map((x,k)=>'\n'+String.fromCharCode(97+k)+'. '+x.t+(x.c?' [CORRECT]':'')).join('');
+  else if(t==='fib')(q.answers||[]).forEach((a,k)=>{o+='\n'+((q.answers||[]).length>1?'Answer '+(k+1):'Answer')+': '+a.join(' | ');});
+  else o+='\nRubric: '+(q.rubric||[]).map(r=>r.kw.join(' / ')+(r.m!=null?' ('+r.m+')':'')).join(' | ');
+  return o;
+}
+function parseOneQ(txt){
+  const r=parseText('# T\n## S\n### Section\n1. '+String(txt||'').trim().replace(/^\d{1,3}[\.\)]\s+/,''));
+  const qs=r.exams.length?r.exams[0].questions:[];
+  if(!qs.length)return {err:'Give the question its options (a. b. c. d., with [CORRECT] after the right one), or an Answer: line for a fill-in question, or a Rubric: line for a theory question.'};
+  if(qs.length>1)return {err:'Put one question in the box. Use the paper builder to combine questions.'};
+  const q=qs[0],t=qType(q);
+  if(t==='obj'&&(q.options.length<2||!q.options.some(o=>o.c)))return {err:'A multiple-choice question needs at least two options and one marked [CORRECT].'};
+  const out={type:t,text:q.text,marks:q.marks!=null?q.marks:1};
+  if(t==='obj')out.options=q.options.map(o=>({t:o.t,c:!!o.c}));
+  if(t==='fib')out.answers=q.answers||[];
+  if(t==='theory')out.rubric=q.rubric||[];
+  return {q:out};
+}
+const bankOn=()=>hasTier('growth')&&SA&&SRVS.on;
+function bankSt(){const st=S.st;return st.bank=st.bank||{items:null,loading:false,busy:false,err:'',msg:'',gf:{subject:'',level:'',topic:'',type:'obj',count:10,difficulty:'mixed',notes:''},edit:null,fSubject:'',fType:'',fText:'',pick:{},build:{cid:'',title:'',subject:''}};}
+async function bankReq(path,opt){
+  const o=Object.assign({},opt||{});o.headers=Object.assign({'content-type':'application/json'},authHdr(),o.headers||{});
+  const r=await srvFetch(path,o),j=await r.json().catch(()=>null);return {r,j};
+}
+async function loadBank(){
+  const b=bankSt();if(b.loading)return;
+  b.loading=true;b.err='';
+  try{
+    const {r,j}=await bankReq('/api/bank');
+    if(r.ok&&j&&j.ok)b.items=j.items;
+    else if(r.status===403)b.err='This school’s plan does not include the question bank.';
+    else if(r.status===401||r.status===429)b.err='Sign in again to open the question bank.';
+    else b.err='The question bank could not be loaded.';
+  }catch(e){b.err='Could not reach the server.';}
+  b.loading=false;if(S.st.page==='bank')render();
+}
+function genErr(status,j){
+  const e=j&&j.error;
+  return e==='no_gens'?'No generations are left for this term. Ask your ExamDesk provider for a pack of 100 more.':
+    e==='ai_off'?'AI is not switched on for this school yet. Ask your ExamDesk provider.':
+    e==='ai_key'?'The AI key set up for this school was not accepted. Tell your ExamDesk provider. You were not charged.':
+    e==='ai_busy'?'The AI service is busy. Wait a minute and try again. You were not charged.':
+    e==='ai_timeout'?'That took too long. Try fewer questions at a time, for example 5 or 6. You were not charged.':
+    e==='ai_down'?'The AI service could not be reached. You were not charged.':
+    e==='bad_output'?'The AI did not return usable questions. Try again. You were not charged.':
+    e==='bad_subject'?'Type the subject first.':e==='bad_count'?'Ask for between 1 and 20 questions.':
+    e==='plan'?'This school’s plan does not include AI questions.':e==='no_licence'?'This site has no licence yet, so AI questions are off. Ask your ExamDesk provider.':
+    e==='licence_suspended'||e==='licence_off'||e==='licence_expired'?'This school’s ExamDesk licence is not active, so new questions cannot be made. Ask your ExamDesk provider.':
+    status===401?'Sign in again, then try again.':status===429?'Too many wrong attempts. Wait a few minutes.':'That did not work ('+(status||'no connection')+'). You were not charged.';
+}
+async function genRun(replaceId){
+  const b=bankSt(),g=b.gf;if(b.busy)return;
+  if(!replaceId&&!String(g.subject).trim()){b.err='Type the subject first.';render();return;}
+  b.busy=replaceId||true;b.err='';b.msg='';render();
+  try{
+    const body=replaceId?{replaceId}:{subject:g.subject,level:g.level,topic:g.topic,type:g.type,count:Math.max(1,Math.min(20,parseInt(g.count,10)||10)),difficulty:g.difficulty,notes:g.notes};
+    const {r,j}=await bankReq('/api/generate',{method:'POST',body:JSON.stringify(body)});
+    if(r.ok&&j&&j.ok){
+      if(replaceId)b.items=(b.items||[]).filter(x=>x.id!==replaceId);
+      b.items=j.items.concat(b.items||[]);
+      if(SRVS.lic)SRVS.lic.gen=j.gen;
+      b.msg=replaceId?(j.charged?'Replaced. That used one generation, because the two free replacements for this set are used up.':'Replaced for free. '+j.replaceLeft+' free replacement'+(j.replaceLeft===1?'':'s')+' left for this set.'):j.items.length+' draft question'+(j.items.length===1?'':'s')+' added below. Check every answer before you accept it.';
+    }else b.err=genErr(r.status,j);
+  }catch(e){b.err='Could not reach the server. You were not charged.';}
+  b.busy=false;render();
+}
+async function bankSave(list,del){
+  const b=bankSt();
+  const {r,j}=await bankReq('/api/bank',{method:'PUT',body:JSON.stringify({items:list||[],del:del||[]})});
+  if(!(r.ok&&j&&j.ok)){b.err=r.status===402?'This school’s licence is not active, so the bank cannot be changed.':r.status===401?'Sign in again, then try again.':'That did not save ('+r.status+').';return false;}
+  const map=new Map((b.items||[]).map(x=>[x.id,x]));
+  (j.items||[]).forEach(x=>map.set(x.id,x));
+  (del||[]).forEach(id=>map.delete(id));
+  b.items=[...map.values()].sort((x,y)=>y.at-x.at);
+  return true;
+}
+function bqHtml(q){
+  const t=qType(q),mk=' <span class="muted sm">['+fmtN(q.marks!=null?q.marks:1)+((q.marks!=null?q.marks:1)===1?' mark':' marks')+']</span>';
+  const tag=t==='fib'?'<span class="badge">Fill in</span> ':t==='theory'?'<span class="badge">Theory</span> ':'';
+  let tail='';
+  if(t==='obj')tail=(q.options||[]).map((o,k)=>'<span class="o'+(o.c?' c':'')+'">'+String.fromCharCode(97+k)+'. '+esc(o.t)+(o.c?'  ✓':'')+'</span>').join('');
+  else if(t==='fib')tail=(q.answers||[]).map((a,k)=>'<span class="o c">'+((q.answers||[]).length>1?'Blank '+(k+1)+': ':'Answer: ')+esc(a.join(' / '))+'</span>').join('');
+  else tail=(q.rubric||[]).length?'<span class="o c">Keywords: '+esc(q.rubric.map(x=>x.kw.join('/')+(x.m!=null?' ('+x.m+')':'')).join(' · '))+'</span>':'<span class="o">No keywords, so this one is marked by hand.</span>';
+  return tag+esc(q.text)+mk+tail+(q.expl?'<span class="o">Why: '+esc(q.expl)+'</span>':'');
+}
+function bankEditor(b){
+  const e=b.edit;
+  return '<div class="card stack" style="border:2px solid var(--accent,#16324F)"><h3>'+(e.id==='new'?'Write a question':'Edit this question')+'</h3>'+
+  '<div class="setgrid"><label class="f">Subject<input type="text" data-bind="st.bank.edit.subject" value="'+esc(e.subject)+'"></label>'+
+  '<label class="f">Class or level<input type="text" data-bind="st.bank.edit.level" value="'+esc(e.level)+'"></label>'+
+  '<label class="f">Topic<input type="text" data-bind="st.bank.edit.topic" value="'+esc(e.topic)+'"></label></div>'+
+  '<label class="f">Question<span class="hint">Multiple choice: the question, then options a. b. c. d. with [CORRECT] after the right one. Fill in: use ____ for the gap and add a line Answer: word | other word. Theory: add a line Rubric: keyword | another / alternative (2). Marks go at the end, like [3 marks].</span><textarea rows="8" data-bind="st.bank.edit.text">'+esc(e.text)+'</textarea></label>'+
+  (e.err?'<div class="err" role="alert">'+esc(e.err)+'</div>':'')+
+  '<div class="row"><button class="btn primary" data-act="bank-edit-save">'+(e.id==='new'?'Add to the bank':'Save changes')+'</button><button class="btn" data-act="bank-edit-cancel">Cancel</button></div></div>';
+}
+function pageBank(){
+  const st=S.st,b=bankSt(),g=b.gf,L=SRVS.lic,gen=L&&L.gen;
+  if(b.items===null&&!b.loading&&!b.err)setTimeout(loadBank,0);
+  const items=b.items||[],drafts=items.filter(x=>x.status==='draft'),ok=items.filter(x=>x.status==='ok');
+  const subjects=[...new Set(items.map(x=>x.subject))].sort();
+  const dl='<datalist id="dl-subj">'+subjects.map(x=>'<option value="'+esc(x)+'">').join('')+'</datalist><datalist id="dl-lvl">'+W.classes.map(c=>'<option value="'+esc(c.name)+'">').join('')+'</datalist>';
+  const allow=gen?'<span class="badge '+(gen.left>0?'ok':'bad')+'">'+gen.left+' AI generation'+(gen.left===1?'':'s')+' left</span>'+(gen.extra?' <span class="muted sm">('+gen.extra+' bought extra, never expire; the rest renew each term)</span>':' <span class="muted sm">(renew each term)</span>'):'';
+  const aiOff=!SRVS.ai?'<div class="note">AI questions are not switched on for this school yet. Ask your ExamDesk provider. You can still write questions into the bank yourself.</div>':'';
+  const busy=!!b.busy;
+  const form='<section class="card stack"><div class="row" style="justify-content:space-between;align-items:center"><div><h2>Make questions with AI</h2><p class="muted" style="margin-top:4px">Each press of Generate uses one generation and gives up to 20 drafts. Drafts are never used until you check and accept them.</p></div>'+allow+'</div>'+aiOff+
+  '<div class="setgrid"><label class="f">Subject<input type="text" list="dl-subj" data-bind="st.bank.gf.subject" value="'+esc(g.subject)+'" placeholder="Basic Science"></label>'+
+  '<label class="f">Class or level<input type="text" list="dl-lvl" data-bind="st.bank.gf.level" value="'+esc(g.level)+'" placeholder="Basic 6"></label>'+
+  '<label class="f">Topic<input type="text" data-bind="st.bank.gf.topic" value="'+esc(g.topic)+'" placeholder="The human heart"></label>'+
+  '<label class="f">Kind<select data-bind="st.bank.gf.type"><option value="obj"'+(g.type==='obj'?' selected':'')+'>Multiple choice</option><option value="fib"'+(g.type==='fib'?' selected':'')+'>Fill in the blank</option><option value="theory"'+(g.type==='theory'?' selected':'')+'>Theory</option></select></label>'+
+  '<label class="f">How many (1 to 20)<input type="number" min="1" max="20" data-bind="st.bank.gf.count" value="'+esc(g.count)+'"></label>'+
+  '<label class="f">Difficulty<select data-bind="st.bank.gf.difficulty">'+['easy','medium','hard','mixed'].map(d=>'<option value="'+d+'"'+(g.difficulty===d?' selected':'')+'>'+d[0].toUpperCase()+d.slice(1)+'</option>').join('')+'</select></label></div>'+
+  '<label class="f">Your notes (optional)<span class="hint">Paste a few lines from the scheme of work or the textbook so the questions follow what you taught.</span><textarea rows="3" data-bind="st.bank.gf.notes">'+esc(g.notes)+'</textarea></label>'+
+  '<div class="row"><button class="btn primary" data-act="gen-run"'+(busy||!SRVS.ai||(gen&&gen.left<=0)?' disabled':'')+'>'+(busy===true?'Writing questions…':'Generate with AI')+'</button><button class="btn" data-act="bank-new">Write a question myself</button></div>'+dl+'</section>';
+  const msg=(b.err?'<div class="err" role="alert">'+esc(b.err)+'</div>':'')+(b.msg?'<div class="note">'+esc(b.msg)+'</div>':'');
+  // drafts, grouped by set
+  const sets=[];drafts.forEach(x=>{let s2=sets.find(y=>y.k===(x.batch||x.id));if(!s2){s2={k:x.batch||x.id,list:[]};sets.push(s2);}s2.list.push(x);});
+  const draftHtml=sets.length?sets.map(set=>{
+    const f=set.list[0];
+    return '<section class="card stack"><div class="row" style="justify-content:space-between;align-items:center"><div><h3>Drafts: '+esc(f.subject)+(f.topic?' · '+esc(f.topic):'')+'</h3><p class="muted sm">'+(f.by==='ai'?'Written by AI for '+esc(f.byName)+'. Not checked yet. Two replacements per set are free.':'Waiting for your check.')+'</p></div><button class="btn small primary" data-act="bank-accept-batch" data-k="'+esc(set.k)+'">Accept all '+set.list.length+'</button></div>'+
+    '<ol class="qlist" style="max-height:none">'+set.list.map(x=>b.edit&&b.edit.id===x.id?'<li>'+bankEditor(b)+'</li>':'<li>'+bqHtml(x.q)+'<div class="row" style="margin-top:8px;gap:8px"><button class="btn small primary" data-act="bank-accept" data-id="'+esc(x.id)+'">Accept</button><button class="btn small" data-act="bank-edit" data-id="'+esc(x.id)+'">Edit</button>'+(x.by==='ai'&&x.batch?'<button class="btn small" data-act="gen-replace" data-id="'+esc(x.id)+'"'+(busy||!SRVS.ai?' disabled':'')+'>'+(b.busy===x.id?'Replacing…':'Replace with a new one')+'</button>':'')+'<button class="btn small danger" data-act="bank-del" data-id="'+esc(x.id)+'">Delete</button></div></li>').join('')+'</ol></section>';
+  }).join(''):'';
+  // accepted bank
+  const fs=b.fSubject,ft=b.fType,fx=nk(b.fText);
+  const shown=ok.filter(x=>(!fs||x.subject===fs)&&(!ft||x.q.type===ft)&&(!fx||nk(x.q.text+' '+x.topic).includes(fx)));
+  const picked=ok.filter(x=>b.pick[x.id]);
+  const bankHtml='<section class="card stack"><div class="row" style="justify-content:space-between;align-items:center"><h2>The bank <span class="muted sm">('+ok.length+' question'+(ok.length===1?'':'s')+')</span></h2></div>'+
+    '<div class="row" style="gap:8px"><select data-bind="st.bank.fSubject" aria-label="Subject"><option value="">All subjects</option>'+subjects.map(x=>'<option value="'+esc(x)+'"'+(fs===x?' selected':'')+'>'+esc(x)+'</option>').join('')+'</select>'+
+    '<select data-bind="st.bank.fType" aria-label="Kind"><option value="">All kinds</option><option value="obj"'+(ft==='obj'?' selected':'')+'>Multiple choice</option><option value="fib"'+(ft==='fib'?' selected':'')+'>Fill in</option><option value="theory"'+(ft==='theory'?' selected':'')+'>Theory</option></select>'+
+    '<input type="search" id="b-find" placeholder="Search questions or topics" data-bind="st.bank.fText" value="'+esc(b.fText)+'" style="flex:1 1 180px"></div>'+
+    (shown.length?'<ol class="qlist" style="max-height:none">'+shown.slice(0,200).map(x=>b.edit&&b.edit.id===x.id?'<li>'+bankEditor(b)+'</li>':'<li><label class="check"><input type="checkbox" data-bpick="'+esc(x.id)+'"'+(b.pick[x.id]?' checked':'')+'><span>'+bqHtml(x.q)+'</span></label><p class="muted sm" style="margin:6px 0 0">'+esc(x.subject)+(x.level?' · '+esc(x.level):'')+(x.topic?' · '+esc(x.topic):'')+' · '+(x.by==='ai'?'AI draft checked by '+esc(x.byName):x.by==='paper'?'from a paper':'written by '+esc(x.byName))+'</p><div class="row" style="margin-top:6px;gap:8px"><button class="btn small" data-act="bank-edit" data-id="'+esc(x.id)+'">Edit</button>'+(st.conf==='bd:'+x.id?'<button class="btn small danger" data-act="bank-del-yes" data-id="'+esc(x.id)+'">Yes, delete</button><button class="btn small" data-act="conf-no">Cancel</button>':'<button class="btn small danger" data-act="bank-del" data-id="'+esc(x.id)+'">Delete</button>')+'</div></li>').join('')+'</ol>'+(shown.length>200?'<p class="muted sm">Showing the first 200. Narrow the search to see the rest.</p>':''):emptyBox(ok.length?'Nothing matches':'The bank is empty','Accept drafts above, write a question, or save a paper’s questions with “Save to the bank” on the Papers tab.'))+'</section>';
+  const build=(!ME&&picked.length)?(()=>{
+    const bd=b.build;if(!W.classes.some(c=>c.id===bd.cid))bd.cid=(W.classes[0]||{}).id||'';
+    return '<section class="card stack" style="border:2px solid var(--accent,#16324F)"><h2>Build a paper from '+picked.length+' picked question'+(picked.length===1?'':'s')+'</h2><div class="setgrid"><label class="f">Class<select data-bind="st.bank.build.cid">'+W.classes.map(c=>'<option value="'+esc(c.id)+'"'+(c.id===bd.cid?' selected':'')+'>'+esc(c.name)+'</option>').join('')+'</select></label>'+
+    '<label class="f">Subject name<input type="text" data-bind="st.bank.build.subject" value="'+esc(bd.subject||picked[0].subject)+'"></label>'+
+    '<label class="f">Test title<input type="text" data-bind="st.bank.build.title" value="'+esc(bd.title)+'" placeholder="First Term Test"></label></div>'+
+    '<p class="muted sm">Questions keep the marks shown. The paper is added closed, so you can check it under Papers before opening it.</p><div class="row"><button class="btn primary" data-act="bank-build">Create the paper</button><button class="btn" data-act="bank-unpick">Clear picks</button></div></section>';
+  })():(ME&&picked.length?'<div class="note">Papers are built by the administrator. Ask them to pick these questions from the bank.</div>':'');
+  return '<div class="stack">'+form+msg+draftHtml+(b.edit&&b.edit.id==='new'?bankEditor(b):'')+(b.loading&&b.items===null?'<p class="muted">Loading the bank…</p>':bankHtml)+build+'</div>';
+}
+function pageTeachers(){
+  const st=S.st,tc=st.tc=st.tc||{list:null,form:null,err:'',busy:false};
+  const f=tc.form;
+  const clsOpts=v=>W.classes.map(c=>'<option value="'+esc(c.id)+'"'+(c.id===v?' selected':'')+'>'+esc(c.name)+'</option>').join('');
+  let editor='';
+  if(f){
+    const frow=(x,i)=>{const c=cls(x.cid),arms=c&&c.arms||[];return '<div class="row" style="gap:8px"><select data-tcr="form" data-i="'+i+'" data-k="cid" aria-label="Class">'+clsOpts(x.cid)+'</select><select data-tcr="form" data-i="'+i+'" data-k="arm" aria-label="Arm"><option value="">Whole class</option>'+arms.map(a=>'<option'+(x.arm===a?' selected':'')+'>'+esc(a)+'</option>').join('')+'</select><button class="btn small ghost" data-act="tc-rm-row" data-w="form" data-i="'+i+'">Remove</button></div>';};
+    const srow=(x,i)=>'<div class="row" style="gap:8px"><select data-tcr="subj" data-i="'+i+'" data-k="cid" aria-label="Class">'+clsOpts(x.cid)+'</select><select data-tcr="subj" data-i="'+i+'" data-k="subject" aria-label="Subject">'+tcSubjects(x.cid).map(sj=>'<option'+(nk(x.subject)===nk(sj)?' selected':'')+'>'+esc(sj)+'</option>').join('')+'</select><button class="btn small ghost" data-act="tc-rm-row" data-w="subj" data-i="'+i+'">Remove</button></div>';
+    editor='<section class="card stack"><h2>'+(f.id?'Edit teacher':'Add a teacher')+'</h2>'+
+      '<label class="f">Name<span class="hint">Teachers sign in with this name, so keep it simple and unique. It is also what the change record shows.</span><input id="tc-name" type="text" data-bind="st.tc.form.name" value="'+esc(f.name)+'" autocomplete="off"></label>'+
+      '<label class="f">Passcode<span class="hint">'+(f.id?'Leave empty to keep their current passcode. ':'')+'At least 8 characters. It cannot be the same as your own.</span><input id="tc-pass" type="password" data-bind="st.tc.form.pass" value="'+esc(f.pass||'')+'" autocomplete="new-password"></label>'+
+      '<div class="stack" style="gap:8px"><b>Form teacher of</b><p class="muted sm">Can see every child in the class (or one arm) and change any mark for them.</p>'+f.form.map(frow).join('')+'<div><button class="btn small" data-act="tc-add-row" data-w="form">Add a class</button></div></div>'+
+      '<div class="stack" style="gap:8px"><b>Subject teacher for</b><p class="muted sm">Can see and mark that subject for the whole class, and nothing else.</p>'+f.subj.map(srow).join('')+'<div><button class="btn small" data-act="tc-add-row" data-w="subj">Add a subject</button></div></div>'+
+      '<div class="row"><button class="btn primary" data-act="tc-save"'+(tc.busy?' disabled':'')+'>'+(tc.busy?'Saving…':'Save teacher')+'</button><button class="btn" data-act="tc-cancel">Cancel</button></div></section>';
+  }
+  const list=tc.list===null?(tc.err?'':'<p class="muted">Loading…</p>'):tc.list.length?'<div class="scroll"><table><thead><tr><th>Name</th><th>Form teacher of</th><th>Subject teacher for</th><th></th></tr></thead><tbody>'+tc.list.map(t=>'<tr><td><b>'+esc(t.name)+'</b></td>'+tcSummary(t)+'<td><div class="row" style="gap:6px"><button class="btn small" data-act="tc-edit" data-id="'+esc(t.id)+'">Edit</button>'+(st.conf==='tcd:'+t.id?'<button class="btn danger small" data-act="tc-del" data-id="'+esc(t.id)+'">Yes, remove</button><button class="btn small" data-act="conf-no">Cancel</button>':'<button class="btn small ghost" data-act="tc-del" data-id="'+esc(t.id)+'">Remove</button>')+'</div></td></tr>').join('')+'</tbody></table></div>':emptyBox('No teachers yet','Add a teacher and give them a class or a subject. They sign in on the examiner page with “I am a teacher”.');
+  return '<div class="page-head"><div><span class="eyebrow">Administrator</span><h1>Teachers</h1></div><p class="muted">Give each teacher their own sign-in. A form teacher sees and corrects their whole class or arm; a subject teacher sees only their subject.</p></div>'+
+    '<div class="stack">'+(tc.err?'<div class="err" role="alert">'+esc(tc.err)+'</div>':'')+
+    '<section class="card stack"><div class="row" style="justify-content:space-between"><h2>Teachers</h2>'+(tc.list&&!f?'<button class="btn primary small" data-act="tc-new">Add a teacher</button>':'')+'</div>'+list+'</section>'+editor+'</div>';
+}
+async function tcPut(list){
+  const st=S.st,tc=st.tc,h2=ses.get(K_H2);
+  if(!h2){tc.err='Sign out and sign in again, then try once more.';render();return false;}
+  tc.busy=true;tc.err='';render();
+  let ok=false;
+  try{
+    const r=await srvFetch('/api/teachers',{method:'PUT',headers:{'content-type':'application/json','x-admin':h2},body:JSON.stringify({teachers:list})});
+    const j=await r.json().catch(()=>({}));
+    if(r.ok&&j.ok){tc.list=j.teachers;ok=true;}
+    else if(j.error==='duplicate_name')tc.err='Another teacher already has the name “'+(j.name||'')+'”.';
+    else if(j.error==='same_as_admin')tc.err='“'+(j.name||'')+'” cannot use the administrator’s passcode.';
+    else if(j.error==='passcode_needed')tc.err='“'+(j.name||'')+'” needs a passcode.';
+    else if(j.error==='plan')tc.err='This school’s plan does not include teacher accounts.';
+    else if(/^licence_/.test(j.error||''))tc.err='Changes cannot be saved because of the licence ('+j.error.replace('licence_','')+'). Contact your ExamDesk provider.';
+    else if(r.status===401){tc.err='The administrator passcode was not accepted. Sign out and sign in again.';ses.del(K_H2);}
+    else tc.err='Saving did not go through ('+r.status+').';
+  }catch(e){tc.err='Could not reach the server.';}
+  tc.busy=false;render();return ok;
+}
+async function tcSave(){
+  const st=S.st,tc=st.tc,f=tc.form;
+  const name=cleanName(f.name);
+  if(!name){tc.err='Type the teacher’s name.';render();return;}
+  const pass=f.pass||'';
+  if((!f.id&&pass.length<8)||(pass&&pass.length<8)){tc.err='The passcode needs at least 8 characters.';render();return;}
+  const entry={name,form:f.form.filter(x=>x.cid).map(x=>({cid:x.cid,arm:x.arm||''})),subj:f.subj.filter(x=>x.cid&&x.subject).map(x=>({cid:x.cid,subject:x.subject}))};
+  if(f.id)entry.id=f.id;
+  if(pass)entry.h2=await hash2(pass);
+  const list=tc.list.map(t=>t.id===f.id?entry:{id:t.id,name:t.name,form:t.form,subj:t.subj});
+  if(!f.id)list.push(entry);
+  if(await tcPut(list)){tc.form=null;st.flash=name+' saved.';render();}
+}
+
 
 /* --- publish and backup --- */
 function licCard(){
@@ -1828,7 +2298,7 @@ function pageSetup(){
   else if(!ART)act='<div class="note">Publishing only works when you open this page from your own Claude account as its owner. On this device you can still run a sitting and save backups.</div>';
   else act='<button class="btn primary" data-act="publish"'+(st.busy?' disabled':'')+'>'+(st.busy?'Publishing…':'Publish setup')+'</button>';
   return '<div class="page-head"><div><span class="eyebrow">Examiner</span><h1>Publish and backup</h1></div></div><div class="stack">'+
-  (st.note?'<div class="note">'+esc(st.note)+'</div>':'')+
+  (st.note?'<div class="note">'+esc(st.note)+(NEWER?'<div class="row" style="margin-top:8px"><button class="btn small primary" data-act="take-server">Use the server’s version</button></div>':'')+'</div>':'')+
   '<section class="card stack"><div class="row" style="justify-content:space-between"><h2>'+(SA&&SRVS.on?'Save to the server':SA?'Update the page':'Publish setup')+'</h2><span class="badge '+(dirty?'warn':'ok')+'">'+(dirty?(SA&&SRVS.on?'Not saved to the server yet':SA?'Not in the page file yet':'Unpublished changes'):'Up to date')+'</span></div>'+
   '<p class="muted">'+(SA&&SRVS.on?'Saving sends your classes, class lists and papers to the server, and every device picks them up when it opens the page. ':SA?'Your classes, class lists and papers are saved inside the page file. Download the updated page and upload it to your host to give every device the new version. ':'Publishing puts your classes, class lists and papers into the page itself, so any device that opens the link has them. ')+'Results are never part of it and stay on the device they were written on.</p>'+
   '<div class="sumrow"><div class="fact"><b>'+W.classes.length+'</b><span>classes</span></div><div class="fact"><b>'+nCh+'</b><span>children</span></div><div class="fact"><b>'+nEx+'</b><span>papers ('+nOpen+' open)</span></div></div>'+
@@ -2012,12 +2482,72 @@ async function act(a,el){
           const j=await r.json().catch(()=>({}));
           if(j&&j.ok){
             if(j.role==='teacher'){ME=j.teacher;ses.set(K_USER,ME);st.page='classes';}else{ME=null;ses.del(K_USER);}
-            st.authed=true;st.err='';st.pass='';ses.set(K_AUTH,h2);ses.set(K_H2,h2);setTimeout(()=>{pullResults();pullMarks();},50);}
+            st.authed=true;st.err='';st.pass='';ses.set(K_AUTH,h2);ses.set(K_H2,h2);
+            for(let i=0;i<30&&syncing;i++)await new Promise(z=>setTimeout(z,100));
+            await syncServer();
+            setTimeout(()=>{pullResults();pullMarks();},50);}
           else if(r.status===429)st.err='Too many wrong attempts. Wait a few minutes, then try again.';
           else st.err=st.asTeacher?'That name or passcode is not correct.':'That passcode is not correct.';
         }catch(e){st.err='Could not reach the server. Signing in needs the internet.';}
       }else if(W.adminHash&&await hash(st.pass)===W.adminHash){st.authed=true;st.err='';ses.set(K_AUTH,W.adminHash);try{ses.set(K_H2,await hash2(st.pass));}catch(e){}st.pass='';}
       else st.err='That passcode is not correct.';
+      render();break;}
+    case 'take-server':{if(!NEWER)break;const sv=NEWER;adoptServer(sv);st.note='';if(!sv.pub&&!sv.part&&ensureCodes())saveW();st.flash='Loaded the version saved on the server.';render();break;}
+    case 'dev-setup':await setupDevice();break;
+    case 'dev-clear':{Object.keys(UNL).forEach(k=>{if(UNL[k]&&UNL[k].dev)delete UNL[k];});saveUnl();st.flash='This device no longer opens classes by itself.';render();break;}
+    case 'rc-prev':{rcSt().prev=el.dataset.n;render();break;}
+    case 'rc-prevx':{rcSt().prev='';render();break;}
+    case 'rc-print':{const c=cls(st.cid);if(c)rcPrint(rcDoc(c,[el.dataset.n],rcSt().kind));break;}
+    case 'as-print':{const c=cls(st.cid);if(c)rcPrint(asDoc(c,[el.dataset.n],el.dataset.e));break;}
+    case 'as-printall':{const c=cls(st.cid);if(c)rcPrint(asDoc(c,classNames(c).roster.filter(n=>resFor(c.id,n,el.dataset.e)),el.dataset.e));break;}
+    case 'rc-printall':{const c=cls(st.cid);if(c)rcPrint(rcDoc(c,classNames(c).roster,rcSt().kind));break;}
+    case 'rc-nophoto':{const c=cls(st.cid);if(c)await phDel(phKey(c,el.dataset.n));render();break;}
+    case 'rc-nologo':{W.report=Object.assign({},W.report||{});delete W.report.logo;saveW();render();break;}
+    case 'gen-run':await genRun();break;
+    case 'gen-replace':await genRun(el.dataset.id);break;
+    case 'bank-new':{const b=bankSt(),g=b.gf;b.edit={id:'new',subject:g.subject,level:g.level,topic:g.topic,text:'The organ that pumps blood around the body is the\na. lungs\nb. kidney\nc. heart [CORRECT]\nd. liver',err:''};b.err='';b.msg='';render();break;}
+    case 'bank-edit':{const b=bankSt(),it=(b.items||[]).find(x=>x.id===el.dataset.id);if(!it)break;b.edit={id:it.id,subject:it.subject,level:it.level||'',topic:it.topic||'',text:qToText(it.q,0),err:'',keep:it};b.err='';b.msg='';render();break;}
+    case 'bank-edit-cancel':bankSt().edit=null;render();break;
+    case 'bank-edit-save':{
+      const b=bankSt(),e=b.edit;if(!e)break;
+      if(!String(e.subject).trim()){e.err='Type the subject.';render();break;}
+      const p=parseOneQ(e.text);if(p.err){e.err=p.err;render();break;}
+      if(e.keep&&e.keep.q&&e.keep.q.expl)p.q.expl=e.keep.q.expl;
+      const ok=await bankSave([{id:e.id==='new'?undefined:e.id,subject:e.subject,level:e.level,topic:e.topic,status:e.keep?e.keep.status:'ok',q:p.q}]);
+      if(ok){b.edit=null;b.msg=e.id==='new'?'Added to the bank.':'Saved.';}else e.err=b.err;
+      render();break;}
+    case 'bank-accept':{const b=bankSt(),it=(b.items||[]).find(x=>x.id===el.dataset.id);if(!it)break;if(await bankSave([{id:it.id,subject:it.subject,level:it.level,topic:it.topic,status:'ok',q:it.q}]))b.msg='Accepted. It is now in the bank.';render();break;}
+    case 'bank-accept-batch':{const b=bankSt(),list=(b.items||[]).filter(x=>x.status==='draft'&&(x.batch||x.id)===el.dataset.k);
+      if(list.length&&await bankSave(list.map(it=>({id:it.id,subject:it.subject,level:it.level,topic:it.topic,status:'ok',q:it.q}))))b.msg=list.length+' questions accepted. Check them in the bank below.';render();break;}
+    case 'bank-del':{const b=bankSt(),it=(b.items||[]).find(x=>x.id===el.dataset.id);if(!it)break;
+      if(it.status==='draft'){if(await bankSave([],[it.id]))b.msg='Draft deleted.';}else st.conf='bd:'+it.id;
+      render();break;}
+    case 'bank-del-yes':{const b=bankSt();st.conf='';delete b.pick[el.dataset.id];if(await bankSave([],[el.dataset.id]))b.msg='Deleted from the bank.';render();break;}
+    case 'bank-unpick':bankSt().pick={};render();break;
+    case 'bank-build':{
+      const b=bankSt(),bd=b.build,c=cls(bd.cid),its=(b.items||[]).filter(x=>x.status==='ok'&&b.pick[x.id]);
+      if(!c||!its.length){b.err='Pick some questions and a class first.';render();break;}
+      const subj=(bd.subject||its[0].subject).trim(),title=(bd.title||'').trim()||(subj+' Test');
+      let n=0,txt='# '+title+'\n## '+subj+'\n';
+      [['obj','Section A – Multiple choice'],['fib','Section B – Fill in the blank'],['theory','Section C – Theory']].forEach(([t,h])=>{
+        const g=its.filter(x=>qType(x.q)===t);if(!g.length)return;
+        txt+='### '+h+'\n';g.forEach(x=>{n++;txt+=qToText(x.q,n)+'\n';});});
+      const r=parseText(txt);
+      if(!r.exams.length){b.err='Those questions could not be turned into a paper.';render();break;}
+      r.exams.forEach(e=>{const m=e.questions.length;
+        c.exams.push({id:uid(),title:e.title,subject:e.course||e.title,questions:e.questions,secs:e.secs||{},theoryMode:'online',
+          duration:Math.min(120,Math.max(10,Math.ceil(m*0.75/5)*5)),passMark:50,shuffleQ:false,shuffleO:false,showResult:true,showReview:false,open:false});});
+      saveW();b.pick={};b.msg='Paper “'+title+'” added to '+c.name+'. It is closed. Open it under Classes, then Papers.';render();break;}
+    case 'bank-save-exam':{
+      const c=cls(st.cid),ex=c&&c.exams.find(e=>e.id===el.dataset.id);if(!ex)break;
+      const b=bankSt();if(b.items===null)await loadBank();
+      const have=new Set((b.items||[]).filter(x=>nk(x.subject)===nk(ex.subject)).map(x=>nk(x.q.text)));
+      const list=ex.questions.filter(q=>qMarkable(q)&&!have.has(nk(q.text))).map(q=>{const t=qType(q),o={type:t,text:q.text,marks:qMax(q)};
+        if(t==='obj')o.options=q.options.map(x=>({t:x.t,c:!!x.c}));if(t==='fib')o.answers=q.answers;if(t==='theory')o.rubric=q.rubric||[];
+        return {subject:ex.subject,level:c.name,topic:'',status:'ok',by:'paper',q:o};});
+      let saved=0;
+      for(let i=0;i<list.length;i+=50){if(await bankSave(list.slice(i,i+50)))saved+=Math.min(50,list.length-i);else break;}
+      st.flash=saved?saved+' question'+(saved===1?'':'s')+' saved to the question bank.'+(list.length<ex.questions.length?' Questions already there were skipped.':''):(b.err||'Everything in this paper is already in the bank.');
       render();break;}
     case 'tc-new':st.tc.form={id:'',name:'',pass:'',form:[],subj:[]};st.tc.err='';render();break;
     case 'tc-edit':{const t=st.tc.list.find(x=>x.id===el.dataset.id);if(t){st.tc.form={id:t.id,name:t.name,pass:'',form:JSON.parse(JSON.stringify(t.form||[])),subj:JSON.parse(JSON.stringify(t.subj||[]))};st.tc.err='';}render();break;}
@@ -2033,12 +2563,15 @@ async function act(a,el){
       else{st.conf='tcd:'+id;render();}
       break;}
     case 'login-mode':st.asTeacher=!st.asTeacher;st.err='';render();break;
-    case 'logout':st.authed=false;st.flash='';st.asTeacher=false;ses.del(K_AUTH);ses.del(K_USER);ses.del(K_H2);ME=null;go('home');break;
-    case 'spage':if(el.dataset.p==='teachers'&&hasTier('growth')){loadTeachers();}st.page=el.dataset.p;st.flash='';st.err='';st.fallback=null;st.conf='';window.scrollTo(0,0);render();break;
+    case 'logout':{const wipe=SRVS.on&&!dirty;st.authed=false;st.flash='';st.asTeacher=false;ses.del(K_AUTH);ses.del(K_USER);ses.del(K_H2);ME=null;
+      if(wipe){store.del(K_SRV);store.del(K_DRAFT);location.reload();break;}
+      go('home');break;}
+    case 'spage':if(el.dataset.p==='teachers'&&hasTier('growth')){loadTeachers();}if(el.dataset.p==='bank'&&hasTier('growth')){loadBank();}st.page=el.dataset.p;st.flash='';st.err='';st.fallback=null;st.conf='';window.scrollTo(0,0);render();break;
     case 'open-class':st.cid=el.dataset.id;st.page='class';st.tab='register';st.flash='';st.err='';st.imp=null;st.rimp=null;st.rosterText=null;st.conf='';st.fallback=null;window.scrollTo(0,0);render();break;
-    case 'ctab':st.tab=el.dataset.t;st.flash='';st.err='';st.conf='';st.fallback=null;st.rosterText=null;st.rimp=null;st.imp=null;render();break;
+    case 'ctab':if(el.dataset.t==='report')phAll().then(m=>{PH=m;if(S.st.tab==='report')render();});st.tab=el.dataset.t;st.flash='';st.err='';st.conf='';st.fallback=null;st.rosterText=null;st.rimp=null;st.imp=null;render();break;
     case 'child':st.child=el.dataset.n;st.page='child';st.conf='';st.flash='';st.fallback=null;window.scrollTo(0,0);render();break;
     case 'back-class':st.page='class';st.conf='';window.scrollTo(0,0);render();break;
+    case 'newcode':{const c=cls(st.cid);if(!c)break;if(c.code)c.prevCodes=(c.prevCodes||[]).filter(x=>nk(x)!==nk(c.code)).concat(c.code).slice(-20);c.code=genCode();saveW();st.flash='New code for '+c.name+': '+c.code+'. Save to the server so it takes effect.';render();break;}
     case 'addclass':{
       const nm=cleanName(st.newClass);
       if(!nm){st.err='Type a class name.';render();break;}
@@ -2154,6 +2687,7 @@ async function beginCheck(){
   const f=S.form,fail=m=>{S.err=m;render();};
   const c=f.cid?cls(f.cid):null;
   if(!c)return fail('Choose your class.');
+  if(c.locked)return unlockClass();
   if(!f.name)return fail('Choose your name from the list.');
   const ex=c.exams.find(e=>e.id===f.eid&&e.open);
   if(!ex)return fail('Choose a subject.');
@@ -2251,10 +2785,26 @@ $app.addEventListener('change',async e=>{
   const t=e.target,st=S.st;
   if(t.dataset.bind&&t.tagName==='SELECT'){
     setPath(t.dataset.bind,t.value);
-    if(t.dataset.bind==='form.cid'){S.form.name='';S.form.eid='';S.form.code='';S.err='';}
+    if(t.dataset.bind==='form.cid'){S.form.name='';S.form.eid='';S.form.code='';S.form.ucode='';S.err='';}
     if(t.dataset.bind==='form.name'){S.form.eid='';S.err='';}
     render();return;
   }
+  if(t.dataset.asel!==undefined){rcSt().script=t.value;render();return;}
+  if(t.dataset.rckind!==undefined){rcSt().kind=t.value==='mid'?'mid':'end';render();return;}
+  if(t.dataset.clt){const c=cls(st.cid);if(c){c.teacher=String(t.value).trim().slice(0,80);saveW();}return;}
+  if(t.dataset.kid){const c=cls(st.cid);if(!c)return;c.kids=c.kids||{};const k=nk(t.dataset.n);c.kids[k]=c.kids[k]||{};c.kids[k][t.dataset.kid]=String(t.value).trim().slice(0,600);saveW();return;}
+  if(t.dataset.rc){rcSt().school=true;W.report=Object.assign({},W.report||{});
+    if(t.dataset.rc==='wMid'||t.dataset.rc==='wEnd'){const v=parseInt(t.value,10);if(!(v>=1&&v<=100)){render();return;}W.report[t.dataset.rc]=v;}
+    else W.report[t.dataset.rc]=String(t.value).trim().slice(0,200);
+    saveW();return;}
+  if(t.dataset.rcphoto&&t.files&&t.files[0]){const c=cls(st.cid),rc=rcSt();rc.err='';
+    try{await phSet(phKey(c,t.dataset.rcphoto),await imgData(t.files[0],'photo'));}catch(e){rc.err='That picture could not be read. Use a JPG or PNG.';}
+    render();return;}
+  if(t.id==='rc-logo'&&t.files&&t.files[0]){const rc=rcSt();rc.err='';rc.school=true;
+    try{W.report=Object.assign({},W.report||{});W.report.logo=await imgData(t.files[0],'logo');saveW();}catch(e){rc.err='That logo could not be read. Use a JPG or PNG.';}
+    render();return;}
+  if(t.dataset.bpick){bankSt().pick[t.dataset.bpick]=t.checked;render();return;}
+  if(t.id==='b-find'){render();const f=document.getElementById('b-find');if(f){f.focus();f.setSelectionRange(f.value.length,f.value.length);}return;}
   if(t.dataset.rs==='pick'){st.rimp.pick=+t.value;render();return;}
   if(t.dataset.bk){
     const it=st.bulk.items[+t.dataset.i];
@@ -2263,6 +2813,7 @@ $app.addEventListener('change',async e=>{
   }
   if(t.dataset.ex){
     const c=cls(st.cid),ex=c&&c.exams.find(x=>x.id===t.dataset.ex),k=t.dataset.k;if(!ex)return;
+    if(k==='term'){ex.term=t.value==='mid'||t.value==='end'?t.value:'';saveW();render();return;}
     if(t.type==='checkbox'){ex[k]=t.checked;}
     else if(t.type==='number'){const v=parseInt(t.value,10);if(isNaN(v))return;ex[k]=k==='passMark'?Math.min(100,Math.max(0,v)):Math.min(360,Math.max(1,v));}
     else{const v=cleanName(t.value);if(!v)return;ex[k]=v;}
@@ -2293,6 +2844,7 @@ $app.addEventListener('change',async e=>{
     }
     if(k==='showRank')c[k]=t.checked;
     else if(k==='name'){const v=cleanName(t.value);if(!v)return;c.name=v;}
+    else if(k==='code'){const v=cleanName(t.value);if(c.code&&nk(c.code)!==nk(v))c.prevCodes=(c.prevCodes||[]).filter(x=>nk(x)!==nk(c.code)).concat(c.code).slice(-20);c.code=v;if(SA&&SRVS.on&&!v){saveW();render();return;}}
     else c[k]=cleanName(t.value);
     saveW();return;
   }
@@ -2340,6 +2892,7 @@ window.addEventListener('beforeunload',e=>{if(S.view==='exam'){e.preventDefault(
   const st=S.st;
   applyBrand();
   if(bootNote)st.note=bootNote;
+  if(W.pub)applyUnlocks();
   const au=ses.get(K_AUTH);
   if(au&&W.adminHash&&(au===W.adminHash||(W.adminHash==='srv'&&au.length===64)))st.authed=true;
   const af=ses.get(K_AFTER);

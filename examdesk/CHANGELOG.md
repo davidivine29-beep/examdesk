@@ -4,6 +4,10 @@
 - School details (address, contacts, section tags, logo, term, academic year, next term, signature name) are set once and shared by every class; age, reg. no and the two comments are typed per child. Class position shows when the class setting "Show class positions" is on. Grades: A 70+, B 60+, C 50+, D 45+, E 40+, F below.
 - Passport photos are stored on the computer where you add them (not in the shared setup), so print from that computer. Candidates opening a class never receive reg. numbers or comments.
 
+## Answer scripts (Growth and above)
+- Report cards tab → **Answer scripts**: print a pupil's paper with their own answers, the mark beside each question, the correct answers and the total, laid out like the school's paper (header, NAME/CLASS/SUBJECT/DATE, sections). Works for imported papers with sections. Questions and options appear in the order that pupil saw them. Print one pupil or everyone who sat the paper.
+- Saved results now keep the question order and option order (`ord`, `perm`). Results saved before this update print in paper order.
+
 ## Candidate device set-up
 - On the Classes page the administrator can press **Set up this device for candidates**. Every class opens on that device for 12 hours, so children pick their names with no code. Press Lock afterwards. Other devices (children's own phones) still ask for the class code.
 

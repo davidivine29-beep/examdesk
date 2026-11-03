@@ -1258,7 +1258,8 @@ function finish(auto){
   const r={id:uid(),cid:s.cid,name:s.name,eid:s.exam.id,subject:s.exam.subject,title:s.exam.title,
     score:m.score,total:m.total,pct:m.pct,grade:m.grade,pass:m.pass,passMark:s.exam.passMark,
     startedAt:s.startedAt,submittedAt:now,usedSec:Math.min(Math.round((now-s.startedAt)/1000),s.exam.duration*60),auto:!!auto,
-    ans,txt,ok,sig:sigOf(s.exam),prov:m.prov,cbt:m.cbt};
+    ans,txt,ok,sig:sigOf(s.exam),prov:m.prov,cbt:m.cbt,ord:s.qs.map(e=>e.i)};
+  if(s.exam.shuffleO){const pm={};s.qs.forEach(e=>{if(e.perm.some((v,k)=>v!==k))pm[e.i]=e.perm;});if(Object.keys(pm).length)r.perm=pm;}
   const tk=tokFor(s.cid);if(tk)r.tok=tk;
   R.push(r);saveR();store.del(K_SES);
   stopTimer();
@@ -1738,12 +1739,72 @@ function rcCard(c,name,kind){
   (end?'<p class="key"><b>GRADE KEY:</b> A 70–100 Excellent · B 60–69 Very good · C 50–59 Good · D 45–49 Fair · E 40–44 Pass · F 0–39 Fail'+(cf.next?' &nbsp; | &nbsp; <b>NEXT TERM BEGINS:</b> '+E(cf.next):'')+'</p>':(cf.next?'<p class="key"><b>NEXT TERM BEGINS:</b> '+E(cf.next)+'</p>':''))+
   '<div class="dir"><div class="line"></div>'+E((cf.director||'').toUpperCase())+(cf.director?'<br>':'')+E(cf.dirTitle)+'</div></section>';
 }
+/* ---------- the child's answer script: the school's paper layout with this child's answers, marks and the correct answers ---------- */
+const AS_CSS="@page{size:A4;margin:14mm}*{box-sizing:border-box}body{margin:0;font:12px/1.4 'Times New Roman',Times,serif;color:#111}.sc{page-break-after:always}.sc:last-child{page-break-after:auto}header{text-align:center}header img{max-height:18mm;max-width:40mm}h1{margin:2px 0;font-size:20px;text-transform:uppercase}.ad{font-size:11px;margin:0 0 6px}h2{text-align:center;margin:8px 0;font-size:14px;text-transform:uppercase}.id{display:flex;flex-wrap:wrap;gap:4px 22px;border-top:1.5px solid #111;border-bottom:1.5px solid #111;padding:5px 0;margin:6px 0 8px;font-weight:700}.sum{display:flex;gap:18px;flex-wrap:wrap;border:1.5px solid #111;padding:5px 10px;margin-bottom:8px;font-weight:700}.sh{font-weight:700;text-transform:uppercase;margin:12px 0 4px;border-bottom:1px solid #111;display:flex;justify-content:space-between}.q{margin:7px 0;page-break-inside:avoid}.q p{margin:0 0 2px;white-space:pre-line}.mk{float:right;font-weight:700;margin-left:10px;white-space:nowrap}.mk.g{color:#1a7a35}.mk.b{color:#b3261e}.opts{display:flex;flex-wrap:wrap;gap:1px 18px;margin:2px 0 0 18px}.opts span{white-space:nowrap}.pick{font-weight:700;text-decoration:underline}.right{color:#1a7a35;font-weight:700}.wrong{color:#b3261e}.ans{margin:2px 0 0 18px}.box{border:1px solid #888;padding:4px 7px;margin:3px 0 0 18px;white-space:pre-wrap;min-height:18px}.cor{margin:2px 0 0 18px;color:#1a7a35;font-weight:700}.note{font-size:10.5px;margin-top:8px}";
+function asDoc(c,names,eid){
+  const ex=c.exams.find(e=>e.id===eid);if(!ex)return '';
+  const cf=rcCfg(),E=esc,L='abcdefghijklmnopqrstuvwxyz';
+  const one=name=>{
+    const r=resFor(c.id,name,eid);
+    const head='<header>'+(cf.logo?'<img src="'+E(cf.logo)+'" alt="">':'')+'<h1>'+E(W.school||'School name')+'</h1>'+(cf.addr?'<p class="ad">'+E(cf.addr)+'</p>':'')+'</header>'+
+      '<h2>'+E([cf.termName,ex.title].filter(Boolean).join(' — '))+(cf.year?' ('+E(cf.year)+')':'')+'</h2>'+
+      '<div class="id"><span>NAME: '+E(name.toUpperCase())+'</span><span>CLASS: '+E(c.name.toUpperCase())+'</span><span>SUBJECT: '+E(String(ex.subject||'').toUpperCase())+'</span><span>DATE: '+(r?E(new Date(r.submittedAt).toLocaleDateString('en-GB')):'')+'</span></div>';
+    if(!r)return '<section class="sc">'+head+'<p>'+E(name)+' has no submitted answers for this paper.</p></section>';
+    const m=markExam(ex,r.ans||{},r.txt||{},MK[r.id]||null);
+    const n=ex.questions.length;
+    let ord=Array.isArray(r.ord)?r.ord.filter(i=>Number.isInteger(i)&&i>=0&&i<n):[];
+    if(!ord.length)ord=ex.questions.map((q,i)=>i);
+    const stale=r.sig!==sigOf(ex);
+    const sum='<div class="sum"><span>SCORE: '+fmtN(m.score)+' / '+fmtN(m.total)+'</span><span>'+m.pct+'%</span><span>GRADE: '+m.grade+'</span>'+(m.prov?'<span>(provisional — written answers not yet marked)</span>':'')+'</div>';
+    let out='',sec=null,num=0;
+    ord.forEach(qi=>{
+      const q=ex.questions[qi];if(!q)return;
+      if(q.section!==sec){sec=q.section;const sm=m.secs.find(x=>x.name===(sec||''));out+='<div class="sh"><span>'+E(sec||'')+'</span>'+(sm&&sm.max?'<span>'+fmtN(sm.got)+' / '+fmtN(sm.max)+'</span>':'')+'</div>';}
+      num++;
+      const pt=m.parts.find(x=>x.qi===qi),t=qType(q),lab=num+'. ';
+      const mk=pt?'<span class="mk '+(pt.got>=pt.max?'g':(pt.got>0?'':'b'))+'">'+fmtN(pt.got)+'/'+fmtN(pt.max)+(pt.got>=pt.max?' ✓':pt.got>0?'':' ✗')+'</span>':'';
+      if(t==='fib'){
+        const given=(r.txt&&r.txt[qi])||[],g=Array.isArray(given)?given:[given];
+        const ok=pt&&pt.got>=pt.max;
+        out+='<div class="q">'+mk+'<p>'+lab+E(q.text)+'</p><div class="ans">Answer given: <span class="'+(ok?'right':'wrong')+'">'+(g.some(x=>String(x||'').trim())?E(g.map(x=>x||'–').join('; ')):'no answer')+'</span></div>'+(ok||!q.answers?'':'<div class="cor">Correct: '+E(q.answers.map(a=>a[0]).join('; '))+'</div>')+'</div>';
+        return;
+      }
+      if(t==='theory'){
+        const v=String((r.txt&&r.txt[qi])||'').trim();
+        out+='<div class="q">'+(pt&&(pt.state==='unmarked'||pt.state==='suggested')?'<span class="mk">not yet marked /'+fmtN(pt.max)+'</span>':mk)+'<p>'+lab+E(q.text)+'</p><div class="box">'+(v?E(v):'<i>No answer</i>')+'</div></div>';
+        return;
+      }
+      const perm=(r.perm&&r.perm[qi])||q.options.map((o,k)=>k);
+      const chosen=(r.ans&&r.ans[qi])||[];
+      const ok=pt&&pt.got>=pt.max;
+      const opts=perm.map((orig,k)=>{
+        const o=q.options[orig];if(!o)return '';
+        const on=chosen.includes(orig);
+        let cls='',mark='';
+        if(on&&o.c){cls='pick right';mark=' ✓';}else if(on){cls='pick wrong';mark=' ✗';}else if(o.c&&!ok){cls='right';mark=' ✓';}
+        return '<span class="'+cls+'">('+L[k]+') '+E(o.t)+mark+'</span>';
+      }).join('');
+      out+='<div class="q">'+mk+'<p>'+lab+E(q.text)+'</p><div class="opts">'+opts+'</div>'+(chosen.length?'':'<div class="ans wrong">No answer</div>')+'</div>';
+    });
+    return '<section class="sc">'+head+sum+out+'<p class="note">Underlined = the answer given. ✓ right, ✗ wrong; the correct answer is shown in green. Questions are in the order this pupil saw them.'+(stale?' This paper was edited after the pupil sat it, so some marks may differ from what was awarded.':'')+'</p></section>';
+  };
+  return '<!doctype html><meta charset="utf-8"><title>'+E(ex.title+' answer scripts')+'</title><style>'+AS_CSS+'</style>'+names.map(one).join('');
+}
+
 const rcDoc=(c,names,kind)=>'<!doctype html><meta charset="utf-8"><title>'+esc(c.name+' report cards')+'</title><style>'+RC_CSS+'</style>'+names.map(n=>rcCard(c,n,kind)).join('');
 function rcPrint(html){
   if(window.__xdPrintHook)return window.__xdPrintHook(html);
   const f=document.createElement('iframe');f.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';document.body.appendChild(f);
   const d=f.contentWindow.document;d.open();d.write(html);d.close();
   setTimeout(()=>{try{f.contentWindow.focus();f.contentWindow.print();}catch(e){}setTimeout(()=>f.remove(),120000);},400);
+}
+function asCard(c,names){
+  const rc=rcSt(),exs=c.exams;
+  if(!exs.length)return '';
+  const eid=exs.some(e=>e.id===rc.script)?rc.script:exs[0].id;
+  const done=names.filter(n=>resFor(c.id,n,eid));
+  return '<section class="card stack"><h3>Answer scripts</h3><p class="muted sm">A printout of the paper with the pupil’s own answers, the marks for each question and the correct answers, in the order that pupil saw them.</p><div class="row" style="gap:10px;align-items:center"><label class="f" style="margin:0">Paper<select data-asel>'+exs.map(e=>'<option value="'+esc(e.id)+'"'+(e.id===eid?' selected':'')+'>'+esc(e.subject+' — '+e.title)+'</option>').join('')+'</select></label><button class="btn primary" data-act="as-printall" data-e="'+esc(eid)+'"'+(done.length?'':' disabled')+'>Print every pupil’s script ('+done.length+')</button></div>'+
+    '<div class="row" style="gap:6px;flex-wrap:wrap">'+names.map(n=>resFor(c.id,n,eid)?'<button class="btn small" data-act="as-print" data-e="'+esc(eid)+'" data-n="'+esc(n)+'">'+esc(n)+'</button>':'<span class="btn small" style="opacity:.45" title="Has not sat this paper">'+esc(n)+'</span>').join('')+'</div></section>';
 }
 function tabReport(c){
   const st=S.st,rc=rcSt(),cf=rcCfg(),kind=rc.kind;
@@ -1768,6 +1829,7 @@ function tabReport(c){
   const prev=rc.prev&&names.some(n=>nk(n)===nk(rc.prev))?'<section class="card stack"><div class="row" style="justify-content:space-between"><h3>Preview: '+esc(rc.prev)+'</h3><button class="btn small" data-act="rc-prevx">Close</button></div><div style="overflow:auto;border:1px solid #ccc;border-radius:6px"><iframe title="Card preview" style="width:210mm;height:297mm;border:0;transform-origin:top left" srcdoc="'+esc(rcDoc(c,[rc.prev],kind))+'"></iframe></div></section>':'';
   return '<div class="stack"><section class="card stack"><h2>Report cards</h2><div class="row" style="gap:10px;align-items:center"><label class="f" style="margin:0">Card<select id="rc-kind" data-rckind><option value="end"'+(kind==='end'?' selected':'')+'>End-of-term (mid-term + exam)</option><option value="mid"'+(kind==='mid'?' selected':'')+'>Mid-term</option></select></label><label class="f" style="margin:0">Class teacher’s name<input type="text" data-clt="1" value="'+esc(c.teacher||'')+'"></label><button class="btn primary" data-act="rc-printall"'+(names.length?'':' disabled')+'>Print the whole class ('+names.length+')</button></div>'+warn+
     '<p class="muted sm">Photos are kept on this computer, so add them and print from the same one. Print from your browser, choose “Save as PDF” if you want a file.</p>'+(rc.msg?'<div class="note">'+esc(rc.msg)+'</div>':'')+(rc.err?'<div class="err" role="alert">'+esc(rc.err)+'</div>':'')+'</section>'+setup+prev+
+    asCard(c,names)+
     (names.length?rows:'<section class="card">'+emptyBox('The class list is empty','Add the children first.','')+'</section>')+'</div>';
 }
 /*@end*/
@@ -2401,6 +2463,8 @@ async function act(a,el){
     case 'rc-prev':{rcSt().prev=el.dataset.n;render();break;}
     case 'rc-prevx':{rcSt().prev='';render();break;}
     case 'rc-print':{const c=cls(st.cid);if(c)rcPrint(rcDoc(c,[el.dataset.n],rcSt().kind));break;}
+    case 'as-print':{const c=cls(st.cid);if(c)rcPrint(asDoc(c,[el.dataset.n],el.dataset.e));break;}
+    case 'as-printall':{const c=cls(st.cid);if(c)rcPrint(asDoc(c,classNames(c).roster.filter(n=>resFor(c.id,n,el.dataset.e)),el.dataset.e));break;}
     case 'rc-printall':{const c=cls(st.cid);if(c)rcPrint(rcDoc(c,classNames(c).roster,rcSt().kind));break;}
     case 'rc-nophoto':{const c=cls(st.cid);if(c)await phDel(phKey(c,el.dataset.n));render();break;}
     case 'rc-nologo':{W.report=Object.assign({},W.report||{});delete W.report.logo;saveW();render();break;}
@@ -2690,6 +2754,7 @@ $app.addEventListener('change',async e=>{
     if(t.dataset.bind==='form.name'){S.form.eid='';S.err='';}
     render();return;
   }
+  if(t.dataset.asel!==undefined){rcSt().script=t.value;render();return;}
   if(t.dataset.rckind!==undefined){rcSt().kind=t.value==='mid'?'mid':'end';render();return;}
   if(t.dataset.clt){const c=cls(st.cid);if(c){c.teacher=String(t.value).trim().slice(0,80);saveW();}return;}
   if(t.dataset.kid){const c=cls(st.cid);if(!c)return;c.kids=c.kids||{};const k=nk(t.dataset.n);c.kids[k]=c.kids[k]||{};c.kids[k][t.dataset.kid]=String(t.value).trim().slice(0,600);saveW();return;}
