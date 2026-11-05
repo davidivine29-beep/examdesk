@@ -544,9 +544,9 @@ ok(r.j.licence.gen.used === 0 && r.j.licence.gen.extra === 99 && r.j.licence.gen
 r = await cA(hAI, 'PUT', '/api/licence', { plan: 'growth', paidUntil: Date.now() + 90 * 86400000, addGens: -5 }, V);
 ok(r.s === 400 && r.j.error === 'bad_gens', 'G: a negative pack is refused');
 r = await cA(hAI, 'PUT', '/api/licence', { plan: 'campus', paidUntil: Date.now() + 90 * 86400000 }, V);
-ok(r.j.licence.gen.allow === 500, 'G: Campus has 500 a term');
+ok(r.j.licence.gen.allow === 400, 'G: Campus has 400 a term');
 r = await cA(hAI, 'PUT', '/api/licence', { plan: 'max', paidUntil: Date.now() + 90 * 86400000 }, V);
-ok(r.j.licence.gen.allow === 1000, 'G: Campus Max has 1,000 a term');
+ok(r.j.licence.gen.allow === 800, 'G: Campus Max has 800 a term');
 await cA(hAI, 'PUT', '/api/licence', { plan: 'growth', paidUntil: Date.now() + 90 * 86400000 }, V);
 // the bank
 const goodQ = mkQ(9);
@@ -688,6 +688,17 @@ ok(r.s === 200, 'B: a suspended school can still read the bank');
   const used = JSON.parse(mem.get('licence')).cmtUsed;
   await cC('PUT', '/api/licence', { plan: 'campus', cap: 1000, paidUntil: Date.now() + 90 * 86400000, newTerm: true }, V);
   ok(used === 1 && JSON.parse(mem.get('licence')).cmtUsed === 0, 'C: a new term resets the comment count');
+  { const l = JSON.parse(mem.get('licence')); l.cmtUsed = 1500; mem.set('licence', JSON.stringify(l)); }
+  r = await cC('POST', '/api/comment', body, { 'x-admin': A });
+  ok(r.s === 402 && r.j.error === 'no_cmts', 'C: none left once the term allowance is used');
+  r = await cC('PUT', '/api/licence', { plan: 'campus', cap: 1000, paidUntil: Date.now() + 90 * 86400000, addCmts: -3 }, V);
+  ok(r.s === 400 && r.j.error === 'bad_cmts', 'C: a bad pack size is refused');
+  r = await cC('PUT', '/api/licence', { plan: 'campus', cap: 1000, paidUntil: Date.now() + 90 * 86400000, addCmts: 500 }, V);
+  ok(r.s === 200 && r.j.licence.cmt.left === 500 && r.j.licence.cmt.extra === 500, 'C: a bought pack adds 500 comments');
+  r = await cC('POST', '/api/comment', body, { 'x-admin': A });
+  ok(r.s === 200 && r.j.cmt.left === 499 && JSON.parse(mem.get('licence')).cmtExtra === 499 && JSON.parse(mem.get('licence')).cmtUsed === 1500, 'C: the pack is used after the term allowance');
+  await cC('PUT', '/api/licence', { plan: 'campus', cap: 1000, paidUntil: Date.now() + 90 * 86400000, newTerm: true }, V);
+  ok(JSON.parse(mem.get('licence')).cmtExtra === 499, 'C: a new term keeps bought comments');
   await cC('PUT', '/api/licence', { plan: 'campus', cap: 1000, paidUntil: Date.now() + 90 * 86400000, state: 'suspended' }, V);
   r = await cC('POST', '/api/comment', body, { 'x-admin': A });
   ok(r.s === 402, 'C: a suspended school cannot write comments');

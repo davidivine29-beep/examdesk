@@ -59,9 +59,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PLANS = { core: { cap: 200 }, growth: { cap: 500 }, campus: { cap: 1000 }, max: { cap: 5000 } };
 const DAY = 24 * 60 * 60 * 1000;
 // AI question generations included each term (the vendor can add purchased packs that never expire)
-const GEN_PLAN = { core: 0, growth: 100, campus: 500, max: 1000 };
+const GEN_PLAN = { core: 0, growth: 100, campus: 400, max: 800 };
 // AI report card comments included each term (Campus and above); reset with a new term
-const CMT_PLAN = { core: 0, growth: 0, campus: 1500, max: 6000 };
+const CMT_PLAN = { core: 0, growth: 0, campus: 1500, max: 8000 };
 const FREE_REPLACE = 2; // replacements per batch that cost nothing
 const countStudents = (setup) => ((setup && setup.classes) || []).reduce((a, c) => a + ((c.roster || []).length), 0);
 function licView(l, setup, now) {
@@ -70,8 +70,8 @@ function licView(l, setup, now) {
   const state = l.state === 'off' || l.state === 'suspended' ? l.state : 'on';
   const status = state === 'off' ? 'deactivated' : state === 'suspended' ? 'suspended' : now <= l.paidUntil ? 'active' : now <= graceUntil ? 'grace' : 'expired';
   const allow = GEN_PLAN[l.plan] || 0, used = l.genUsed || 0, extra = l.genExtra || 0;
-  const cAllow = CMT_PLAN[l.plan] || 0, cUsed = l.cmtUsed || 0;
-  return { set: true, gen: { allow, used, extra, left: Math.max(0, allow - used) + extra }, cmt: { allow: cAllow, used: cUsed, left: Math.max(0, cAllow - cUsed) }, state, plan: l.plan, cap: l.cap, paidUntil: l.paidUntil, graceUntil, graceDays: l.graceDays, status, enforce: l.enforce, school: l.school || '', students: countStudents(setup) };
+  const cAllow = CMT_PLAN[l.plan] || 0, cUsed = l.cmtUsed || 0, cExtra = l.cmtExtra || 0;
+  return { set: true, gen: { allow, used, extra, left: Math.max(0, allow - used) + extra }, cmt: { allow: cAllow, used: cUsed, extra: cExtra, left: Math.max(0, cAllow - cUsed) + cExtra }, state, plan: l.plan, cap: l.cap, paidUntil: l.paidUntil, graceUntil, graceDays: l.graceDays, status, enforce: l.enforce, school: l.school || '', students: countStudents(setup) };
 }
 
 // ---- question bank: one record per question. A question here has the same shape the paper builder uses.
@@ -424,8 +424,10 @@ export function makeHandler(store, opts = {}) {
         if (state !== 'on' && state !== 'suspended' && state !== 'off') return jl({ ok: false, error: 'bad_state' }, 400);
         const addGens = b.addGens == null ? 0 : b.addGens;
         if (!Number.isInteger(addGens) || addGens < 0 || addGens > 100000) return jl({ ok: false, error: 'bad_gens' }, 400);
+        const addCmts = b.addCmts == null ? 0 : b.addCmts;
+        if (!Number.isInteger(addCmts) || addCmts < 0 || addCmts > 1000000) return jl({ ok: false, error: 'bad_cmts' }, 400);
         const lic = { plan, cap, paidUntil, graceDays, enforce, state, school: String(b.school || '').slice(0, 120), updatedAt: Date.now(),
-          genUsed: b.newTerm === true ? 0 : (prev && prev.genUsed) || 0, cmtUsed: b.newTerm === true ? 0 : (prev && prev.cmtUsed) || 0, genExtra: ((prev && prev.genExtra) || 0) + addGens,
+          genUsed: b.newTerm === true ? 0 : (prev && prev.genUsed) || 0, cmtUsed: b.newTerm === true ? 0 : (prev && prev.cmtUsed) || 0, genExtra: ((prev && prev.genExtra) || 0) + addGens, cmtExtra: ((prev && prev.cmtExtra) || 0) + addCmts,
           claim: typeof b.claimCode === 'string' && b.claimCode.trim().length >= 6 ? await sha('xd-claim:' + nk(b.claimCode)) : (b.claimCode === '' ? '' : (prev && prev.claim) || '') };
         await store.set('licence', JSON.stringify(lic));
         return jl({ ok: true, ai: !!aiKey, licence: licView(lic, await loadIdx(), Date.now()) });
@@ -799,7 +801,8 @@ export function makeHandler(store, opts = {}) {
         text = text.replace(/\s+/g, ' ').replace(/^["“'\s]+|["”'\s]+$/g, '').slice(0, 700);
         if (!text) return json({ ok: false, error: 'bad_output' }, 502); // nothing usable: not charged
         const cur = (await getLicence()) || lic;
-        const lic2 = { ...cur, cmtUsed: (cur.cmtUsed || 0) + 1 };
+        const lic2 = { ...cur };
+        if ((cur.cmtUsed || 0) < (CMT_PLAN[cur.plan] || 0)) lic2.cmtUsed = (cur.cmtUsed || 0) + 1; else lic2.cmtExtra = Math.max(0, (cur.cmtExtra || 0) - 1);
         await store.set('licence', JSON.stringify(lic2));
         return json({ ok: true, text, cmt: licView(lic2, await loadIdx(), Date.now()).cmt });
       }

@@ -1,3 +1,7 @@
+## AI allowances and comment packs
+- Per-term AI generations are now Growth 100, Campus 400, Campus Max 800. Comments: Campus 1,500, Campus Max 8,000.
+- **Comment packs.** The vendor console has **Add AI comments** (+500, +1,000, +2,500). Bought comments never expire, survive a new term, and are used after the term allowance.
+
 ## Campus plan
 - **White-label.** The school's own logo, name and colour replace ExamDesk wording on every page, the candidate screen and printouts.
 - **Stores 1,000 children comfortably.** Data is mirrored to the browser's database as well as local storage, so large rolls and result sets do not hit storage limits.
