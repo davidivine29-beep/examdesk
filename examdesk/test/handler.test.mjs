@@ -693,5 +693,43 @@ ok(r.s === 200, 'B: a suspended school can still read the bank');
   ok(r.s === 402, 'C: a suspended school cannot write comments');
 }
 
+
+// ---- A: activity log and exam officer (Campus and above)
+{
+  const mem = new Map();
+  const st = { get: async (k) => mem.get(k) ?? null, set: async (k, v) => void mem.set(k, v), delete: async (k) => void mem.delete(k), list: async (p) => [...mem.keys()].filter((k) => k.startsWith(p)).sort() };
+  const hA = makeHandler(st, { failDelayMs: 1, vendorKey: VK });
+  const cA2 = async (method, path, body, headers = {}) => { const r = await hA(new Request('http://x' + path, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'content-type': 'application/json', ...headers } })); return { s: r.status, j: await r.json() }; };
+  await cA2('PUT', '/api/licence', { plan: 'campus', cap: 1000, paidUntil: Date.now() + 90 * 86400000 }, V);
+  const s1 = { v: 2, stamp: 0, school: 'S', adminHash: 'x', classes: [{ id: 'b1', name: 'Basic 1', roster: ['Okafor Ngozi'], exams: [{ id: 'e1', subject: 'Maths', title: 'T', open: false, questions: [] }] }, { id: 'b2', name: 'Basic 2', roster: ['Bello Amina'], exams: [{ id: 'e2', subject: 'English', title: 'T', open: false, questions: [] }] }] };
+  let r = await cA2('PUT', '/api/setup', { setup: s1, baseStamp: 0 }, { 'x-admin': A });
+  const stamp = r.j.stamp;
+  const s2 = JSON.parse(JSON.stringify(s1)); s2.classes[0].exams[0].open = true; s2.classes[1].roster.push('New Child');
+  r = await cA2('PUT', '/api/setup', { setup: s2, baseStamp: stamp }, { 'x-admin': A });
+  r = await cA2('GET', '/api/audit', null, { 'x-admin': A });
+  ok(r.s === 200 && r.j.items.length >= 2 && /opened Maths/.test(r.j.items[0].detail) && /\+1 child/.test(r.j.items[0].detail), 'A: the log says what changed, newest first: ' + (r.j.items[0] && r.j.items[0].detail));
+  r = await cA2('GET', '/api/audit', null, { 'x-admin': B });
+  ok(r.s === 401, 'A: only the administrator can read the log');
+  await cA2('PUT', '/api/licence', { plan: 'growth', cap: 500, paidUntil: Date.now() + 90 * 86400000 }, V);
+  r = await cA2('GET', '/api/audit', null, { 'x-admin': A });
+  ok(r.s === 403, 'A: Growth does not include the log');
+  await cA2('PUT', '/api/licence', { plan: 'campus', cap: 1000, paidUntil: Date.now() + 90 * 86400000 }, V);
+  r = await cA2('PUT', '/api/teachers', { teachers: [{ name: 'Mr Officer', h2: sha('xd-auth:officer-pass'), officer: true }, { name: 'Mrs Form', h2: sha('xd-auth:form-pass-12'), form: [{ cid: 'b1' }], officer: false }] }, { 'x-admin': A });
+  ok(r.s === 200 && r.j.teachers.find((t) => t.name === 'Mr Officer').officer === true && !r.j.teachers.find((t) => t.name === 'Mrs Form').officer, 'A: a teacher can be made exam officer');
+  const OF = { 'x-admin': sha('xd-auth:officer-pass'), 'x-user': r.j.teachers.find((t) => t.name === 'Mr Officer').id };
+  r = await cA2('GET', '/api/setup', null, OF);
+  ok(r.j.setup.part === true && r.j.setup.classes.length === 2, 'A: the officer sees every class');
+  const FM = { 'x-admin': sha('xd-auth:form-pass-12'), 'x-user': (await cA2('GET', '/api/teachers', null, { 'x-admin': A })).j.teachers.find((t) => t.name === 'Mrs Form').id };
+  r = await cA2('GET', '/api/setup', null, FM);
+  ok(r.j.setup.classes.length === 1, 'A: an ordinary form teacher still sees only their class');
+  r = await cA2('PUT', '/api/setup', { setup: s2, baseStamp: 0 }, OF);
+  ok(r.s !== 200, 'A: the officer cannot change the setup');
+  r = await cA2('GET', '/api/audit', null, OF);
+  ok(r.s === 401, 'A: the officer cannot read the log');
+  await cA2('PUT', '/api/licence', { plan: 'growth', cap: 500, paidUntil: Date.now() + 90 * 86400000 }, V);
+  r = await cA2('PUT', '/api/teachers', { teachers: [{ id: r.j && undefined, name: 'Mr Officer', h2: sha('xd-auth:officer-pass'), officer: true }] }, { 'x-admin': A });
+  ok(r.s === 200 && r.j.teachers[0].officer === false, 'A: on Growth the officer flag is ignored');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

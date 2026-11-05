@@ -556,10 +556,11 @@ function autoMark(ex,q,qi,ans,txt){
   const cor=q.options.map((o,k)=>o.c?k:-1).filter(k=>k>=0),a=((ans&&ans[qi])||[]).slice().sort((x,y)=>x-y);
   return {max,auto:a.length===cor.length&&a.every((v,j)=>v===cor[j])?max:0};
 }
-function markExam(ex,ans,txt,mk){
+function markExam(ex,ans,txt,mk,only){
   const parts=[],secs=[];let score=0,total=0,cbt=0,prov=false;
   ex.questions.forEach((q,qi)=>{
     if(!qMarkable(q))return;
+    if(only&&!only.includes(qi))return;   // a paper that gives each child a random draw is marked only on the questions that child was given
     const a=autoMark(ex,q,qi,ans,txt),t=qType(q),it=mk&&mk[qi]&&mk[qi].m!=null?mk[qi]:null;
     let got=a.auto,state='auto';
     if(t==='theory')state=a.paper?'unmarked':'suggested';
@@ -749,7 +750,7 @@ function saveW(){
   applyBrand();
 }
 /* White-label (Campus and above) replaces the ExamDesk name and mark with the school's own. The hooks below do nothing on lower plans. */
-let wlOn=()=>false,wlCard=()=>'',wlDom=()=>{},wlColor=()=>{},aiBoxHtml=()=>'',cmTop=()=>'';
+let wlOn=()=>false,wlCard=()=>'',wlDom=()=>{},wlColor=()=>{},aiBoxHtml=()=>'',cmTop=()=>'',officerBox=()=>'',auditCard=()=>'',integBadge=()=>'',integCard=()=>'',schoolPage=null,schoolNav=()=>[],drawCard=()=>'',termBox=()=>'',rcKindOpts=()=>'',rcAnnualCard=null;
 /*@tier campus*/
 wlOn=()=>!!(W.wl&&W.wl.on);
 wlColor=()=>{
@@ -775,6 +776,170 @@ wlCard=()=>{
 };
 /*@end*/
 /*@tier campus*/
+/* School overview (Campus and above): every class and subject on one page */
+function schoolData(){
+  const cl=W.classes.map(c=>{
+    let got=0,sum=0,pass=0,best=null;
+    c.roster.forEach(n=>{const row=childRow(c,n);got+=row.done;row.cells.filter(Boolean).forEach(x=>{sum+=x.pct;if(x.pass)pass++;});
+      if(c.exams.length&&row.done===c.exams.length&&(!best||row.avg>best.avg))best={name:n,avg:row.avg};});
+    return {c,children:c.roster.length,papers:c.exams.length,got,poss:c.roster.length*c.exams.length,avg:got?rcR1(sum/got):null,passRate:got?Math.round(pass/got*100):null,best};
+  });
+  const subs=new Map();
+  W.classes.forEach(c=>c.exams.forEach(e=>{const k=nk(e.subject),o=subs.get(k)||{subject:e.subject,cls:new Set(),n:0,sum:0,pass:0};
+    c.roster.forEach(nm=>{const x=resFor(c.id,nm,e.id);if(x){o.n++;o.sum+=x.pct;if(x.pass)o.pass++;o.cls.add(c.id);}});subs.set(k,o);}));
+  const sj=[...subs.values()].map(o=>({subject:o.subject,classes:o.cls.size,n:o.n,avg:o.n?rcR1(o.sum/o.n):null,passRate:o.n?Math.round(o.pass/o.n*100):null})).sort((a,b)=>a.subject.localeCompare(b.subject));
+  const empty=[];W.classes.forEach(c=>c.exams.forEach(e=>{if(c.roster.length&&!c.roster.some(n=>resFor(c.id,n,e.id)))empty.push(c.name+' — '+e.subject);}));
+  return {cl,sj,empty};
+}
+schoolNav=()=>[['school','School overview']];
+schoolPage=()=>{
+  const d=schoolData(),E=esc,pc=v=>v==null?'—':fmtN(v)+'%';
+  const tot=d.cl.reduce((a,x)=>a+x.children,0);
+  const tile=(n,l)=>'<div class="fact"><b>'+n+'</b><span>'+l+'</span></div>';
+  return '<div class="stack"><h2>School overview</h2><p class="muted">Every class and subject at a glance. Averages cover the papers children have written so far.</p>'+
+    '<section class="card stack"><div class="facts">'+tile(W.classes.length,'classes')+tile(tot,'children')+tile(d.cl.reduce((a,x)=>a+x.papers,0),'papers')+tile(d.cl.reduce((a,x)=>a+x.got,0),'results in')+'</div>'+
+    '<div><button class="btn" data-act="sch-xlsx">Download the school broadsheet (.xlsx)</button></div></section>'+
+    '<section class="card stack"><h3>By class</h3><div class="scroll"><table><thead><tr><th>Class</th><th class="num">Children</th><th class="num">Papers</th><th class="num">Results in</th><th class="num">Average</th><th class="num">Pass rate</th><th>Top child (every paper written)</th></tr></thead><tbody>'+
+    d.cl.map(x=>'<tr><td><b>'+E(x.c.name)+'</b></td><td class="num">'+x.children+'</td><td class="num">'+x.papers+'</td><td class="num">'+x.got+'/'+x.poss+'</td><td class="num">'+pc(x.avg)+'</td><td class="num">'+pc(x.passRate)+'</td><td>'+(x.best?E(x.best.name)+' ('+fmtN(x.best.avg)+'%)':'—')+'</td></tr>').join('')+'</tbody></table></div></section>'+
+    '<section class="card stack"><h3>By subject, across classes</h3><div class="scroll"><table><thead><tr><th>Subject</th><th class="num">Classes</th><th class="num">Written</th><th class="num">Average</th><th class="num">Pass rate</th></tr></thead><tbody>'+
+    d.sj.map(x=>'<tr><td><b>'+E(x.subject)+'</b></td><td class="num">'+x.classes+'</td><td class="num">'+x.n+'</td><td class="num">'+pc(x.avg)+'</td><td class="num">'+pc(x.passRate)+'</td></tr>').join('')+'</tbody></table></div></section>'+
+    '<section class="card stack"><h3>Papers nobody has written yet</h3>'+(d.empty.length?'<ul>'+d.empty.map(x=>'<li>'+E(x)+'</li>').join('')+'</ul>':'<p>Every paper has at least one result.</p>')+'</section></div>';
+};
+/*@end*/
+/*@tier campus*/
+/* Random draw (Campus and above): each child gets k questions chosen at random from a section, so no two children sit the same paper. */
+function applyDraw(ex){
+  const names=[];ex.questions.forEach(q=>{const n=q.section||'';if(!names.includes(n))names.push(n);});
+  names.forEach(n=>{
+    const us=secUnits(ex,n),info=(ex.secs||{})[n]||(ex.secs||{})[n.trim()]||null,k=ex.draw&&ex.draw[n];
+    const f=k&&k<us.length?us.length/k:1;
+    ex.questions.forEach(q=>{
+      if((q.section||'')!==n||q.qm!=null)return;
+      if(q.mb==null)q.mb=q.marks;
+      if(info&&info.marks!=null&&q.mb!=null)q.marks=r2(q.mb*f);else if(q.mb!=null)q.marks=q.mb;
+    });
+  });
+}
+drawCard=ex=>{
+  const names=[];ex.questions.forEach(q=>{const n=q.section||'';if(!names.includes(n))names.push(n);});
+  const rows=names.map(n=>{
+    const us=secUnits(ex,n);if(us.length<2)return '';
+    const k=(ex.draw&&ex.draw[n])||us.length;
+    return '<label class="f" style="margin:0">'+esc(n||'All questions')+' — '+us.length+' in the pool<span class="hint">Each child gets</span><input type="number" min="1" max="'+us.length+'" data-draw="'+esc(n)+'" data-ex="'+esc(ex.id)+'" data-k="draw" value="'+k+'" style="width:90px"></label>';
+  }).filter(Boolean);
+  if(!rows.length)return '';
+  const drawn=ex.draw&&Object.keys(ex.draw).some(n=>ex.draw[n]);
+  return '<details class="card" data-dx="draw:'+esc(ex.id)+'"><summary style="cursor:pointer;font-weight:700">Random questions for each child'+(drawn?' (on)':'')+'</summary><div class="stack" style="margin-top:10px"><p class="muted sm">Put more questions in a section than a child should answer, then say how many each child gets. Each child gets a different random set. A section keeps its total marks, shared across the questions drawn. Numbered parts (1a, 1b) stay together.</p><div class="row" style="gap:12px;flex-wrap:wrap">'+rows.join('')+'</div></div></details>';
+};
+/* Annual report card and year-end promotion (Campus and above). Closing a term saves every child's subject totals; the annual card combines the closed terms of the year. */
+const TERM_NEXT={'FIRST TERM':'SECOND TERM','SECOND TERM':'THIRD TERM'};
+function rcTerms(c){const cf=rcCfg();return (c.hist||[]).filter(h=>!cf.year||h.year===cf.year).sort((a,b)=>a.at-b.at).slice(-3);}
+function rcAnnual(c,name){
+  const terms=rcTerms(c),k=nk(name),subs=[];
+  terms.forEach(t=>((t.rows||{})[k]||[]).forEach(r=>{if(!subs.some(x=>nk(x)===nk(r.s)))subs.push(r.s);}));
+  const rows=subs.map(sj=>{
+    const per=terms.map(t=>{const r=((t.rows||{})[k]||[]).find(x=>nk(x.s)===nk(sj));return r&&r.tot!=null?{v:r.tot,p:r.tot/(t.per||100)*100}:null;});
+    const got=per.filter(Boolean),avg=got.length?rcR1(got.reduce((a,x)=>a+x.p,0)/got.length):null;
+    return {subject:sj,per,avg,grade:avg==null?'':gradeOf(avg)};});
+  const have=rows.filter(r=>r.avg!=null),avg=have.length?rcR1(have.reduce((a,r)=>a+r.avg,0)/have.length):null;
+  return {terms,rows,avg};
+}
+function rcAnnualPos(c,name){
+  const all=c.roster.map(n=>({n,a:rcAnnual(c,n).avg})).filter(x=>x.a!=null).sort((x,y)=>y.a-x.a);
+  let rank=0,prev=null,seen=0,mine=0;
+  all.forEach(x=>{seen++;if(x.a!==prev){rank=seen;prev=x.a;}if(nk(x.n)===nk(name))mine=rank;});
+  return mine?{rank:mine,of:all.length}:null;
+}
+rcKindOpts=kind=>'<option value="annual"'+(kind==='annual'?' selected':'')+'>End-of-year (all closed terms)</option>';
+rcAnnualCard=(c,name)=>{
+  const cf=rcCfg(),d=rcAnnual(c,name),E=esc,num=v=>v==null?'—':fmtN(v);
+  const pos=(c.rcPos==null?c.showRank:c.rcPos)?rcAnnualPos(c,name):null;
+  const th=d.terms.map(t=>'<th class="c">'+E(String(t.label||'TERM').replace(' TERM','').toUpperCase())+'<br><span>/'+fmtN(t.per||100)+'</span></th>').join('');
+  const rows=d.rows.map(r=>'<tr><td>'+E(r.subject)+'</td>'+r.per.map(x=>'<td class="c">'+num(x&&x.v)+'</td>').join('')+'<td class="c b">'+(r.avg==null?'—':fmtN(r.avg)+'%')+'</td><td class="c">'+r.grade+'</td><td>'+(r.grade?REMARK[r.grade]:'')+'</td></tr>').join('');
+  const right='<div class="cap">PERFORMANCE THROUGH THE YEAR</div>'+(d.terms.length?'<table class="sub"><tr><th>SUBJECTS</th>'+th+'<th class="c">ANNUAL<br>AVERAGE</th><th class="c">GRADE</th><th>REMARK</th></tr>'+rows+'</table>':'<div class="prov">No term has been closed for this year yet.</div>')+
+    '<div class="sum"><div><b>TERMS INCLUDED:</b> '+d.terms.length+' of 3</div><div><b>ANNUAL AVERAGE:</b> '+(d.avg==null?'':fmtN(d.avg)+'%')+'</div><div><b>OVERALL GRADE:</b> '+(d.avg==null?'':gradeOf(d.avg))+'</div>'+(pos?'<div><b>POSITION IN CLASS:</b> '+ordN(pos.rank)+' of '+pos.of+'</div>':'')+'</div>';
+  return rcCard(c,name,'end',{title:'END-OF-YEAR PROGRESS REPORT',sub:cf.year?E(cf.year)+' ACADEMIC YEAR':'',right,key:'<p class="key"><b>GRADE KEY:</b> A 70–100 Excellent · B 60–69 Very good · C 50–59 Good · D 45–49 Fair · E 40–44 Pass · F 0–39 Fail'+(cf.next?' &nbsp; | &nbsp; <b>NEXT SESSION BEGINS:</b> '+E(cf.next):'')+'</p>'});
+};
+function closeTermFor(c){
+  const cf=rcCfg(),rows={};let per=0;
+  classNames(c).roster.forEach(n=>{const d=rcData(c,n,'end');if(d.wMid||d.wEnd)per=(d.wMid||0)+(d.wEnd||0);
+    rows[nk(n)]=d.rows.filter(r=>r.tot!=null).map(r=>({s:r.subject,mid:r.mid==null?null:r.mid,end:r.end==null?null:r.end,tot:r.tot}));});
+  const label=String(cf.termName||'TERM').toUpperCase(),year=cf.year||'';
+  c.hist=(c.hist||[]).filter(h=>!(h.label===label&&h.year===year));
+  c.hist.push({label,year,per:per||100,at:Date.now(),rows});
+  c.exams.forEach(e=>{if(e.term){e.term='';e.open=false;}});
+}
+const nextClassId=c=>{
+  const m=/^(.*?)(\d+)\s*$/.exec(String(c.name||'').trim());if(!m)return '';
+  const want=nk(m[1]+(parseInt(m[2],10)+1));const hit=W.classes.find(x=>nk(x.name)===want);return hit?hit.id:'';
+};
+const pmSt=()=>{const rc=rcSt();if(!rc.promo){rc.promo={};W.classes.forEach(c=>{rc.promo[c.id]=nextClassId(c);});}return rc.promo;};
+termBox=(c,names)=>{
+  const rc=rcSt(),cf=rcCfg(),closed=rcTerms(c),pm=pmSt(),E=esc;
+  const label=String(cf.termName||'').toUpperCase();
+  const again=closed.some(h=>h.label===label&&h.year===(cf.year||''));
+  const promo=W.classes.map(x=>'<label class="f" style="margin:0">'+E(x.name)+' ('+x.roster.length+') moves to<select data-pm="'+E(x.id)+'"><option value=""'+(!pm[x.id]?' selected':'')+'>Leaves the school</option>'+W.classes.filter(y=>y.id!==x.id).map(y=>'<option value="'+E(y.id)+'"'+(pm[x.id]===y.id?' selected':'')+'>'+E(y.name)+'</option>').join('')+'</select></label>').join('');
+  return '<section class="card stack"><h3>Terms and the end-of-year card</h3>'+
+    '<p class="muted sm">When a term is over, close it. Every child’s subject totals are saved and the papers are untagged, ready for the next term. After the third term, choose “End-of-year” in the Card list above to print the annual card.</p>'+
+    '<p class="sm"><b>Closed this year:</b> '+(closed.length?closed.map(h=>E(h.label)).join(', '):'none yet')+'</p>'+
+    (rc.closeConf?'<div class="note">Close <b>'+E(label||'this term')+'</b>'+(again?' again (it replaces the saved totals)':'')+'? The totals are saved, and the papers tagged for the report card are untagged and closed. Results stay saved.</div><div class="row" style="gap:8px"><button class="btn primary" data-act="tm-close" data-all="'+(rc.closeConf==='all'?'1':'')+'">Yes, close '+(rc.closeConf==='all'?'it for every class':'it for '+E(c.name))+'</button><button class="btn" data-act="tm-cancel">Cancel</button></div>':
+    '<div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn" data-act="tm-ask" data-w="this">Close '+E(label||'the term')+' for '+E(c.name)+'</button><button class="btn" data-act="tm-ask" data-w="all">Close it for every class</button></div>')+
+    '<details class="card" data-dx="promo"><summary style="cursor:pointer;font-weight:700">Start a new year: move the children up</summary><div class="stack" style="margin-top:10px"><p class="muted sm">Choose where each class goes. Children keep their reg. number and photo; last year’s comments and AI notes are cleared; the term totals are archived. Do this after printing the annual cards, and save a results file first (Publish and backup).</p><div class="setgrid">'+promo+'</div>'+
+    '<label class="check"><input type="checkbox" data-pmx="papers"'+(rc.promoPapers?' checked':'')+'>Also remove last year’s papers from every class (their saved results stay)</label>'+
+    (rc.promoConf?'<div class="note">This moves every child to the class chosen above. It cannot be undone.</div><div class="row" style="gap:8px"><button class="btn danger" data-act="pm-go">Yes, move them up</button><button class="btn" data-act="pm-cancel">Cancel</button></div>':'<div><button class="btn" data-act="pm-ask">Move the children up…</button></div>')+'</div></details></section>';
+};
+async function promoteAll(){
+  const rc=rcSt(),pm=pmSt(),cf=rcCfg(),now=Date.now();
+  const snap=W.classes.map(c=>({c,roster:c.roster.slice(),kids:Object.assign({},c.kids||{}),arm:Object.assign({},c.armOf||{})}));
+  W.archive=(W.archive||[]).concat([{year:cf.year||'',at:now,classes:W.classes.map(c=>({id:c.id,name:c.name,hist:c.hist||[]}))}]);
+  W.classes.forEach(c=>{c.roster=[];c.kids={};c.armOf={};c.hist=[];if(rc.promoPapers)c.exams=[];});
+  for(const o of snap){
+    const dest=pm[o.c.id]?cls(pm[o.c.id]):null;if(!dest)continue;
+    for(const n of o.roster){
+      if(!dest.roster.some(x=>nk(x)===nk(n)))dest.roster.push(n);
+      const k=nk(n),kid=o.kids[k];
+      if(kid){const x=Object.assign({},kid);delete x.tc;delete x.hc;delete x.ai;dest.kids[k]=x;}
+      const ph=PH.get(phKey(o.c,n));if(ph){await phSet(phKey(dest,n),ph);}
+    }
+  }
+  W.classes.forEach(c=>{c.roster=sortNames(c.roster);});
+  rc.promo=null;rc.promoConf=false;rc.closeConf='';saveW();
+}
+/* Exam integrity log (Campus and above): while a child is writing, note each time the page was left (another tab or app) and how long, and each time the device went offline. The teacher sees it as a flag; it is a prompt to look, not a verdict. */
+document.addEventListener('visibilitychange',()=>{
+  const s=S.ses;if(!s||S.view!=='exam')return;
+  s.integ=s.integ||{n:0,secs:0,off:0};
+  if(document.hidden){if(!s.integ.since)s.integ.since=Date.now();}
+  else if(s.integ.since){s.integ.n++;s.integ.secs+=Math.round((Date.now()-s.integ.since)/1000);delete s.integ.since;}
+  persist();
+});
+window.addEventListener('offline',()=>{const s=S.ses;if(!s||S.view!=='exam')return;s.integ=s.integ||{n:0,secs:0,off:0};s.integ.off++;persist();});
+integBadge=r=>{
+  const g=r&&r.integ;if(!g||!(g.n||g.off))return '';
+  const bits=[];if(g.n)bits.push('left the page '+g.n+'×'+(g.secs?' ('+(g.secs>=60?Math.round(g.secs/60)+' min':g.secs+' s')+')':''));if(g.off)bits.push('went offline '+g.off+'×');
+  return ' <span class="badge '+(g.n>=3||g.secs>=120?'bad':'warn')+'" title="'+esc(bits.join(', '))+'">'+esc(bits.join(', '))+'</span>';
+};
+integCard=(c,ex,rs)=>{
+  const flagged=rs.filter(r=>r.integ&&(r.integ.n||r.integ.off)).sort((a,b)=>(b.integ.secs||0)-(a.integ.secs||0));
+  if(!rs.some(r=>r.integ))return '';
+  return '<section class="card stack"><h3>Exam integrity</h3><p class="muted sm">Recorded while children were writing: how often the page was left for another tab or app, and for how long. A child may have been interrupted by a call or a notification, so treat this as a reason to look, not as proof.</p>'+
+    (flagged.length?'<div class="scroll"><table><thead><tr><th>Name</th><th>Left the page</th><th>Time away</th><th>Went offline</th></tr></thead><tbody>'+flagged.map(r=>'<tr><td>'+esc(r.name)+'</td><td class="num">'+(r.integ.n||0)+'</td><td class="num">'+(r.integ.secs?(r.integ.secs>=60?Math.round(r.integ.secs/60)+' min':r.integ.secs+' s'):'0')+'</td><td class="num">'+(r.integ.off||0)+'</td></tr>').join('')+'</tbody></table></div>':'<p>Nobody left the page during this paper.</p>')+'</section>';
+};
+/* Exam officer role and the activity log (Campus and above) */
+officerBox=f=>'<label class="check"><input type="checkbox" data-tcoff="1"'+(f.officer?' checked':'')+'><span><b>Exam officer</b>: sees and can mark every class, but cannot change the setup, the passcode or the licence.</span></label>';
+const auSt=()=>{const st=S.st;return st.au=st.au||{items:null,busy:false,err:''};};
+auditCard=()=>{
+  if(!(SA&&SRVS.on))return '';
+  const a=auSt();
+  const rows=a.items&&a.items.length?'<div class="scroll"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th>Details</th></tr></thead><tbody>'+a.items.map(x=>'<tr><td class="sm">'+esc(fmtDate(x.at))+'</td><td>'+esc(x.who)+'</td><td>'+esc(x.act)+'</td><td class="sm">'+esc(x.detail||'')+'</td></tr>').join('')+'</tbody></table></div>':a.items?'<p class="muted">Nothing recorded yet.</p>':'';
+  return '<section class="card stack"><h2>Activity log</h2><p class="muted sm">Every save of the setup, passcode change, teacher change and results clear is recorded here with the time. Marks keep their own change history on each child’s results.</p><div class="row"><button class="btn" data-act="au-load"'+(a.busy?' disabled':'')+'>'+(a.busy?'Loading…':a.items?'Refresh':'Show recent activity')+'</button></div>'+(a.err?'<div class="err" role="alert">'+esc(a.err)+'</div>':'')+rows+'</section>';
+};
+async function auLoad(){
+  const a=auSt();a.busy=true;a.err='';render();
+  try{const {r,j}=await bankReq('/api/audit');if(r.ok&&j&&j.ok)a.items=j.items;else a.err=r.status===403?'This school’s plan does not include the activity log.':r.status===401?'Sign in again, then try again.':'That did not load ('+r.status+').';}
+  catch(e){a.err='That did not load. Check the connection.';}
+  a.busy=false;render();
+}
 /* AI report card comments (Campus and above): the teacher taps preset points and/or types rough notes, the AI turns them into a comment, the teacher reads and edits it. */
 const CM_PRE={
   class:[['How they performed',['Excellent performance','Good performance','Good performance but could be better','Fair performance, needs to work harder','Not very good, needs a lot more effort','Has improved this term','Has dropped this term']],
@@ -866,7 +1031,7 @@ function effective(r){
   try{
     const c=cls(r.cid),ex=c&&c.exams.find(e=>e.id===r.eid);
     if(!ex||!sigOk(r,ex))return r;
-    const m=markExam(ex,r.ans||{},r.txt||{},MK[r.id]||null);
+    const m=markExam(ex,r.ans||{},r.txt||{},MK[r.id]||null,ex.draw&&Array.isArray(r.ord)?r.ord:null);
     return Object.assign({},r,{score:m.score,total:m.total,pct:m.pct,grade:m.grade,pass:m.pass,prov:m.prov,cbt:m.cbt,secs:m.secs,_m:m},r.hk?{ok:okOf(ex,m)}:{});
   }catch(e){return r;}
 }
@@ -879,19 +1044,40 @@ const saveR=()=>{store.set(K_RES,R);reindex();};
 let ME=ses.get(K_USER)||null;
 const armOf=(c,name)=>{const m=c.armOf||{},k=nk(name);for(const n of Object.keys(m))if(nk(n)===k)return m[n]||'';return '';};
 function canActR(r){
-  if(!ME)return true;
+  if(!ME||ME.officer)return true;
   const c=cls(r.cid);if(!c)return false;
   const ex=c.exams.find(e=>e.id===r.eid),arm=armOf(c,r.name);
   if((ME.form||[]).some(f=>f.cid===c.id&&(!f.arm||f.arm===arm)))return true;
   return !!ex&&(ME.subj||[]).some(x=>x.cid===c.id&&nk(x.subject)===nk(ex.subject));
 }
-const myClasses=()=>ME?W.classes.filter(c=>(ME.form||[]).some(f=>f.cid===c.id)||(ME.subj||[]).some(x=>x.cid===c.id)):W.classes;
+const myClasses=()=>ME&&!ME.officer?W.classes.filter(c=>(ME.form||[]).some(f=>f.cid===c.id)||(ME.subj||[]).some(x=>x.cid===c.id)):W.classes;
 const authHdr=()=>{const h2=ses.get(K_H2);if(!h2)return {};return ME?{'x-admin':h2,'x-user':ME.id}:{'x-admin':h2};};
 const resFor=(cid,name,eid)=>{const r=IDX.get(cid+'|'+nk(name)+'|'+eid)||null;return r&&canActR(r)?r:null;};
 reindex();
 
 const markedCount=e=>e.questions.filter(q=>qMarkable(q)).length;
-const examTotal=e=>r2(e.questions.reduce((a,q)=>a+(qMarkable(q)?qMax(q):0),0));
+/* units of a section: consecutive parts of one numbered question (1a, 1b) stay together when a draw is made */
+function secUnits(e,name){
+  const units=[];
+  e.questions.forEach((q,i)=>{if((q.section||'')!==name)return;const u=units[units.length-1];if(q.no&&u&&u.no===q.no)u.ix.push(i);else units.push({no:q.no||'',ix:[i]});});
+  return units;
+}
+function drawCount(e,idx){
+  idx=idx||e.questions.map((q,i)=>i);if(!e.draw)return idx.length;
+  const seen=new Set();let tot=0;
+  e.questions.forEach(q=>{const n=q.section||'';if(seen.has(n))return;seen.add(n);
+    const ql=idx.filter(i=>(e.questions[i].section||'')===n).length,us=secUnits(e,n).length,k=e.draw[n];
+    tot+=k&&k<us?Math.round(ql*k/us):ql;});
+  return tot;
+}
+function examTotal(e){
+  if(!e.draw)return r2(e.questions.reduce((a,q)=>a+(qMarkable(q)?qMax(q):0),0));
+  let tot=0;const seen=new Set();
+  e.questions.forEach(q=>{const n=q.section||'';if(seen.has(n))return;seen.add(n);
+    const us=secUnits(e,n),k=e.draw[n],sum=us.reduce((a,u)=>a+u.ix.reduce((b,i)=>b+(qMarkable(e.questions[i])?qMax(e.questions[i]):0),0),0);
+    tot+=k&&k<us.length?sum*k/us.length:sum;});
+  return r2(tot);
+}
 const unkeyed=e=>e.questions.filter(q=>qType(q)==='obj'&&!q.options.some(o=>o.c)).length;
 const hasWritten=e=>e.questions.some(q=>qType(q)!=='obj');
 const fmtN=n=>String(Math.round(n*100)/100);
@@ -1353,7 +1539,11 @@ function startExam(){
     if(g&&g.sec===q.section)g.ix.push(i);else groups.push({sec:q.section,ix:[i]});
   });
   let order=[];
-  groups.forEach(g=>{order=order.concat(exam.shuffleQ?shuffle(g.ix):g.ix);});
+  groups.forEach(g=>{
+    let ix=g.ix;const k=exam.draw&&exam.draw[g.sec||''];
+    if(k){const us=secUnits(exam,g.sec||'').map(u=>u.ix.filter(i=>ix.includes(i))).filter(u=>u.length);
+      if(k<us.length)ix=shuffle(us.slice()).slice(0,k).reduce((a,u)=>a.concat(u),[]).sort((a,b)=>a-b);}
+    order=order.concat(exam.shuffleQ?shuffle(ix):ix);});
   const qs=order.map(i=>{
     const n=exam.questions[i].options.length,base=[...Array(n).keys()];
     return {i,perm:exam.shuffleO?shuffle(base):base};
@@ -1371,7 +1561,7 @@ function finish(auto){
     if(v!=null&&(Array.isArray(v)?v.some(x=>String(x||'').trim()):String(v).trim()))txt[e.i]=v;
   });
   const hk=!!s.exam.hk;
-  const m=hk?{score:0,total:examTotal(s.exam),pct:0,grade:'-',pass:false,prov:true,cbt:0,parts:[]}:markExam(s.exam,ans,txt,null);
+  const m=hk?{score:0,total:examTotal(s.exam),pct:0,grade:'-',pass:false,prov:true,cbt:0,parts:[]}:markExam(s.exam,ans,txt,null,s.exam.draw?s.qs.map(e=>e.i):null);
   const ok=hk?'':okOf(s.exam,m);
   const now=Date.now();
   const r={id:uid(),cid:s.cid,name:s.name,eid:s.exam.id,subject:s.exam.subject,title:s.exam.title,
@@ -1379,6 +1569,7 @@ function finish(auto){
     startedAt:s.startedAt,submittedAt:now,usedSec:Math.min(Math.round((now-s.startedAt)/1000),s.exam.duration*60),auto:!!auto,
     ans,txt,ok,sig:hk?sigN(s.exam):sigOf(s.exam),prov:m.prov,cbt:m.cbt,ord:s.qs.map(e=>e.i)};
   if(hk)r.hk=1;
+  if(s.integ){if(s.integ.since){s.integ.n=(s.integ.n||0)+1;s.integ.secs=(s.integ.secs||0)+Math.round((Date.now()-s.integ.since)/1000);delete s.integ.since;}r.integ={n:s.integ.n||0,secs:s.integ.secs||0,off:s.integ.off||0};}
   if(s.exam.shuffleO){const pm={};s.qs.forEach(e=>{if(e.perm.some((v,k)=>v!==k))pm[e.i]=e.perm;});if(Object.keys(pm).length)r.perm=pm;}
   const tk=tokFor(s.cid);if(tk)r.tok=tk;
   R.push(r);saveR();store.del(K_SES);
@@ -1487,7 +1678,7 @@ function viewIntro(){
   return topBar('')+'<div class="intro" style="'+acStyle(c)+'"><section class="card" style="display:grid;gap:16px">'+
   '<div><span class="eyebrow">'+esc(c.name)+' · '+esc(ex.title)+'</span><h1 style="margin-top:6px">'+esc(ex.subject)+'</h1></div>'+
   '<p><b>'+esc(S.cand.name)+'</b></p>'+
-  '<div class="facts"><div class="fact"><b>'+candIdx(ex).length+'</b><span>questions</span></div><div class="fact"><b>'+ex.duration+'</b><span>minutes</span></div><div class="fact"><b>'+fmtN(examTotal(ex))+'</b><span>total marks</span></div><div class="fact"><b>'+ex.passMark+'%</b><span>pass mark</span></div></div>'+
+  '<div class="facts"><div class="fact"><b>'+drawCount(ex,candIdx(ex))+'</b><span>questions</span></div><div class="fact"><b>'+ex.duration+'</b><span>minutes</span></div><div class="fact"><b>'+fmtN(examTotal(ex))+'</b><span>total marks</span></div><div class="fact"><b>'+ex.passMark+'%</b><span>pass mark</span></div></div>'+
   '<ul class="rules">'+((hasWritten(ex)||ex.questions.some(q=>q.marks!=null&&q.marks!==1))?'<li>The marks for each question are shown beside it. Type your answer in the box for fill-in-the-blank and written questions. Questions that say “select all” need every correct option and no wrong one.</li>':'<li>Each question carries one mark. Questions that say “select all” need every correct option and no wrong one.</li>')+(ex.theoryMode==='paper'&&ex.questions.some(q=>qType(q)==='theory')?'<li>The written questions are answered on paper and are not shown here.</li>':'')+'<li>You can change answers and revisit questions until you submit.</li><li>Do not close this page. The timer keeps running even if you reload.</li></ul>'+
   '<div class="row"><button class="btn primary" data-act="start">Start test</button><button class="btn" data-act="home">Back</button></div></section></div>';
 }
@@ -1546,7 +1737,7 @@ function viewResult(){
   if(!r.showResult){
     body='<section class="card" style="display:grid;gap:12px;max-width:620px;margin:0 auto"><span class="eyebrow">'+esc(r.subject)+'</span><h1>Test submitted</h1><p class="muted">Your answers have been recorded. Your teacher will share your score.</p>'+syncLine(r)+'<div><button class="btn primary" data-act="done">Finish</button></div></section>';
   }else{
-    const m=r.mexam?markExam(r.mexam,r.ans||{},r.txt||{},null):null;
+    const m=r.mexam?markExam(r.mexam,r.ans||{},r.txt||{},null,r.mexam.draw?r.ord:null):null;
     const prov=m?m.prov:!!r.prov;
     const thMax=m?r2(m.parts.filter(x=>x.type==='theory').reduce((a,x)=>a+x.max,0)):0;
     const cbtMax=m?r2(r.total-thMax):r.total;
@@ -1597,14 +1788,14 @@ function staffBar(){
   const st=S.st;
   const cur=k=>k==='classes'?(st.page==='classes'||st.page==='class'||st.page==='child'):st.page===k;
   const bk=hasTier('growth')&&SA&&SRVS.on?[['bank','Question bank']]:[];
-  const nav=(ME?[['classes','Classes']].concat(bk):[['classes','Classes']].concat(bk,hasTier('growth')&&SA&&SRVS.on?[['teachers','Teachers']]:[],[['setup','Publish and backup']])).map(([k,l])=>'<button class="navlink" data-act="spage" data-p="'+k+'" aria-current="'+(cur(k)?'page':'false')+'">'+l+'</button>').join('');
+  const nav=(ME?[['classes','Classes']].concat(bk):[['classes','Classes']].concat(bk,schoolNav(),hasTier('growth')&&SA&&SRVS.on?[['teachers','Teachers']]:[],[['setup','Publish and backup']])).map(([k,l])=>'<button class="navlink" data-act="spage" data-p="'+k+'" aria-current="'+(cur(k)?'page':'false')+'">'+l+'</button>').join('');
   return '<header class="top"><div class="brand">'+brandHtml('Examiner')+'</div><nav class="snav">'+nav+'</nav>'+
   '<div class="top-actions"><span id="dirty-badge" class="badge warn"'+(dirty?'':' hidden')+'>'+(SA?'Not in page file yet':'Unpublished changes')+'</span><button class="btn small" data-act="home">Candidate screen</button><button class="btn small" data-act="logout">'+(ME?'Sign out':'Lock')+'</button></div></header>'+(ME?'<div class="note" style="margin:0 0 14px">Signed in as <b>'+esc(ME.name)+'</b>. You see only the classes and subjects assigned to you.</div>':'');
 }
 function viewStaff(){
   const st=S.st;
   if(!st.authed)return viewLogin();
-  const body=st.page==='class'?pageClass():st.page==='child'?pageChild():(st.page==='setup'&&!ME)?pageSetup():(st.page==='teachers'&&!ME&&hasTier('growth'))?pageTeachers():(st.page==='bank'&&hasTier('growth'))?pageBank():pageClasses();
+  const body=st.page==='class'?pageClass():st.page==='child'?pageChild():(st.page==='setup'&&!ME)?pageSetup():(st.page==='teachers'&&!ME&&hasTier('growth'))?pageTeachers():(st.page==='bank'&&hasTier('growth'))?pageBank():(st.page==='school'&&!ME&&schoolPage)?schoolPage():pageClasses();
   return staffBar()+
     (st.flash?'<div class="okbox" style="margin-bottom:14px" role="status">'+esc(st.flash)+'</div>':'')+
     (st.err?'<div class="err" style="margin-bottom:14px" role="alert">'+esc(st.err)+'</div>':'')+
@@ -1702,7 +1893,7 @@ function tabPapers(c){
       '<label class="f">Test title<input type="text" data-ex="'+esc(ex.id)+'" data-k="title" value="'+esc(ex.title)+'"></label>'+
       '<label class="f">Duration (minutes)<input type="number" min="1" max="360" data-ex="'+esc(ex.id)+'" data-k="duration" value="'+ex.duration+'"></label>'+
       '<label class="f">Pass mark (%)<input type="number" min="0" max="100" data-ex="'+esc(ex.id)+'" data-k="passMark" value="'+ex.passMark+'"></label></div>'+
-      '<div class="stack" style="gap:8px">'+chk('shuffleQ','Shuffle question order inside each section')+chk('shuffleO','Shuffle option order for each child')+chk('hideKey','Keep the answers off the children’s devices (scores appear on the teacher’s side after the answers reach the server)')+chk('showResult','Show the score to the child after submitting')+chk('showReview','Show the answer review after submitting')+'</div>'+
+      drawCard(ex)+'<div class="stack" style="gap:8px">'+chk('shuffleQ','Shuffle question order inside each section')+chk('shuffleO','Shuffle option order for each child')+chk('hideKey','Keep the answers off the children’s devices (scores appear on the teacher’s side after the answers reach the server)')+chk('showResult','Show the score to the child after submitting')+chk('showReview','Show the answer review after submitting')+'</div>'+
       (ex.questions.some(q=>qType(q)==='theory')?'<label class="f" style="margin-top:12px">Theory answers<select data-ex="'+esc(ex.id)+'" data-k="theoryMode"><option value="online"'+(ex.theoryMode!=='paper'?' selected':'')+'>Typed by the child on the computer</option><option value="paper"'+(ex.theoryMode==='paper'?' selected':'')+'>Written on paper, marks entered by the teacher</option></select></label>':'')+
       (hasTier('growth')&&!ME?'<label class="f" style="margin-top:12px">Counts on the report card as<select data-ex="'+esc(ex.id)+'" data-k="term"><option value=""'+(!ex.term?' selected':'')+'>Not on the report card</option><option value="mid"'+(ex.term==='mid'?' selected':'')+'>Mid-term score</option><option value="end"'+(ex.term==='end'?' selected':'')+'>End-of-term exam</option></select></label>':'')+
       '<ol class="qlist" style="margin-top:14px">'+ex.questions.map((q,i)=>qPreview(q,i)).join('')+'</ol>'+
@@ -1791,7 +1982,7 @@ function tabAnalysis(c){
     return '<div class="r'+(flag?' flag':'')+'"><b class="mono">'+esc(qLab(ex,i))+'</b><span class="q">'+ty+esc(q.text)+'</span><span class="t" aria-hidden="true"><i style="width:'+(marked?pc:0)+'%"></i></span><span class="mono">'+(marked?pc+'%':'no key')+(flag?'<br><span class="badge bad">Check key</span>':'')+'</span></div>';
   }).join('');
   const provN=rs.filter(r=>r.prov).length;
-  return '<div class="stack"><section class="card stack"><div class="row" style="justify-content:space-between"><label class="f" style="min-width:240px">Paper<select id="a-exam" data-bind="st.aeid">'+withRes.map(e=>'<option value="'+esc(e.id)+'"'+(e.id===ex.id?' selected':'')+'>'+esc(e.subject)+'</option>').join('')+'</select></label></div>'+
+  return '<div class="stack">'+integCard(c,ex,rs)+'<section class="card stack"><div class="row" style="justify-content:space-between"><label class="f" style="min-width:240px">Paper<select id="a-exam" data-bind="st.aeid">'+withRes.map(e=>'<option value="'+esc(e.id)+'"'+(e.id===ex.id?' selected':'')+'>'+esc(e.subject)+'</option>').join('')+'</select></label></div>'+
     '<div class="child-tiles"><div class="tile"><b>'+n+'</b><span>written</span></div><div class="tile"><b>'+avg+'%</b><span>average</span></div><div class="tile"><b>'+hi+'%</b><span>highest</span></div><div class="tile"><b>'+lo+'%</b><span>lowest</span></div><div class="tile"><b>'+pass+'%</b><span>passed</span></div></div></section>'+
     '<section class="card stack"><h3>Score spread</h3><div class="spread">'+bands.map((v,i)=>'<div><span class="mono">'+(i*10)+(i===9?'–100':'–'+(i*10+9))+'</span><span class="t"><i style="width:'+Math.round(v/mx*100)+'%"></i></span><span class="mono">'+v+'</span></div>').join('')+'</div></section>'+
     '<section class="card stack"><div><h3>Questions</h3><p class="muted sm" style="margin-top:4px">Share of the marks children earned on each question. A question almost everyone missed is often a wrong answer key.'+(provN?' '+provN+' result'+(provN>1?'s are':' is')+' provisional, so theory figures can still change.':'')+(use.length<n?' '+(n-use.length)+' result'+(n-use.length>1?'s used':' used')+' an earlier version of this paper and '+(n-use.length>1?'are':'is')+' left out here.':'')+'</p></div><div class="qa">'+qrows+'</div></section></div>';
@@ -1855,7 +2046,7 @@ function rcPosition(c,name,kind){
   return mine?{rank:mine,of:all.length}:null;
 }
 const RC_CSS="@page{size:A4;margin:0}*{box-sizing:border-box}body{margin:0;font:11.5px/1.35 Arial,Helvetica,sans-serif;color:#111}.page{position:relative;width:210mm;height:296mm;padding:12mm 14mm;page-break-after:always;overflow:hidden}header{display:flex;align-items:center;justify-content:center;gap:12px}header img{max-height:20mm;max-width:40mm}h1{margin:0;font-size:26px;color:#2a4d8f;text-align:center}.pills{display:flex;gap:14px;justify-content:center;margin-top:6px}.pills span{border:1.5px solid #222;border-radius:7px;padding:3px 16px;font-weight:700;font-size:10.5px}.p0{background:#fff176}.p1{background:#f8bbd0}.p2{background:#a5f58f}.addr{text-align:center;margin:8px 0 6px;font-size:10.5px}h2{text-align:center;margin:8px 0 0;font-size:16px}h3{text-align:center;margin:2px 0 10px;font-size:13px}.grid{display:grid;grid-template-columns:62mm 1fr;gap:8mm;align-items:start}.ph{width:40.6mm;height:40.6mm;border:1px solid #222;margin:2px auto 12px;overflow:hidden;background:#f2f4f8;color:#9aa3b5;font-size:9px;display:flex;align-items:center;justify-content:center;text-align:center}.ph img{width:100%;height:100%;object-fit:cover}.left{border:1px solid #222;padding:10px 10px 12px}.id p{margin:4px 0}.cap{text-align:center;font-weight:700;margin-bottom:4px}table.sub{width:100%;border-collapse:collapse}.sub th,.sub td{border:1px solid #222;padding:4px 6px}.sub th{background:#eef2fa;font-size:10.5px;text-align:left}.sub th span{font-weight:400}.c{text-align:center}.b{font-weight:700}.tot td{font-weight:700;background:#f4f6fa}.sum{border:1px solid #222;margin-top:8px;padding:6px 10px;display:grid;gap:5px}.cm{border:1px solid #222;padding:6px 10px;margin-top:10px}.cm p{margin:5px 0}.key{font-size:10px;margin:8px 0 0;text-align:center}.dir{text-align:center;margin-top:16px;font-weight:700}.dir .line{width:55mm;border-top:1px solid #222;margin:26px auto 4px}.prov{font-size:9.5px;margin-top:4px}";
-function rcCard(c,name,kind){
+function rcCard(c,name,kind,ov){
   const cf=rcCfg(),d=rcData(c,name,kind),k=rcKid(c,name),end=kind==='end',E=esc;
   const num=v=>v==null?'—':(v===undefined?'':fmtN(v));
   const rows=d.rows.map(r=>{const g=r.tot!=null?gradeOf(r.tot/(d.wMid+d.wEnd)*100):'';
@@ -1870,12 +2061,12 @@ function rcCard(c,name,kind){
   const contact=[cf.phone?'<b>'+E(cf.phone)+'</b>':'',(cf.email||cf.web)?(cf.email?'<b>EMAIL:</b> '+E(cf.email):'')+(cf.email&&cf.web?' &nbsp; ':'')+(cf.web?'<b>WEBSITE:</b> '+E(cf.web):''):''].filter(Boolean).join('<br>');
   return '<section class="page"><header>'+(cf.logo?'<img src="'+E(cf.logo)+'" alt="">':'')+'<div><h1>'+E((W.school||'School name').toUpperCase())+'</h1>'+(pills?'<div class="pills">'+pills+'</div>':'')+'</div></header>'+
   '<p class="addr">'+(cf.addr?'<b>'+E(cf.addr.toUpperCase())+'</b><br>':'')+contact+'</p>'+
-  '<h2>'+(end?'END-OF-TERM PROGRESS REPORT':'MID-TERM PROGRESS REPORT')+'</h2><h3>'+E(cf.termName)+(cf.year?' &nbsp; '+E(cf.year)+' ACADEMIC YEAR':'')+'</h3>'+
+  '<h2>'+(ov?ov.title:end?'END-OF-TERM PROGRESS REPORT':'MID-TERM PROGRESS REPORT')+'</h2><h3>'+(ov&&ov.sub!=null?ov.sub:E(cf.termName)+(cf.year?' &nbsp; '+E(cf.year)+' ACADEMIC YEAR':''))+'</h3>'+
   '<div class="grid"><div class="left"><div class="ph">'+(photo?'<img src="'+E(photo)+'" alt="">':'PASSPORT PHOTO')+'</div><div class="id"><p><b>NAME:</b> '+E(name.toUpperCase())+'</p><p><b>CLASS:</b> '+E(c.name.toUpperCase())+'</p>'+(k.age?'<p><b>AGE:</b> '+E(k.age.toUpperCase())+'</p>':'')+(k.reg?'<p><b>REG. NO:</b> '+E(k.reg)+'</p>':'')+(c.teacher?'<p><b>TEACHER:</b> '+E(String(c.teacher).toUpperCase())+'</p>':'')+'</div></div>'+
-  '<div class="right"><div class="cap">PERFORMANCE IN SUBJECTS</div><table class="sub">'+head+rows+foot+'</table>'+(d.prov?'<div class="prov">* This mark has not been confirmed by the teacher yet.</div>':'')+
-  '<div class="sum"><div><b>MARKS OBTAINABLE:</b> '+d.obt+'</div><div><b>PUPIL’S TOTAL SCORE:</b> '+(d.total==null?'':fmtN(d.total))+'</div><div><b>PUPIL’S AVERAGE:</b> '+(d.avg==null?'':fmtN(d.avg)+'%')+'</div>'+(pos?'<div><b>POSITION IN CLASS:</b> '+ordN(pos.rank)+' of '+pos.of+'</div>':'')+'</div></div></div>'+
+  '<div class="right">'+(ov?ov.right:'<div class="cap">PERFORMANCE IN SUBJECTS</div><table class="sub">'+head+rows+foot+'</table>'+(d.prov?'<div class="prov">* This mark has not been confirmed by the teacher yet.</div>':'')+
+  '<div class="sum"><div><b>MARKS OBTAINABLE:</b> '+d.obt+'</div><div><b>PUPIL’S TOTAL SCORE:</b> '+(d.total==null?'':fmtN(d.total))+'</div><div><b>PUPIL’S AVERAGE:</b> '+(d.avg==null?'':fmtN(d.avg)+'%')+'</div>'+(pos?'<div><b>POSITION IN CLASS:</b> '+ordN(pos.rank)+' of '+pos.of+'</div>':'')+'</div>')+'</div></div>'+
   '<div class="cm"><p><b>CLASS TEACHER’S COMMENT:</b> '+E(k.tc||'')+'</p><p><b>SIGNED:</b> ________ &nbsp;&nbsp; <b>DATE:</b> ________</p><p><b>HEAD TEACHER’S COMMENT:</b> '+E(k.hc||'')+'</p><p><b>SIGNED:</b> ________ &nbsp;&nbsp; <b>DATE:</b> ________</p></div>'+
-  (end?'<p class="key"><b>GRADE KEY:</b> A 70–100 Excellent · B 60–69 Very good · C 50–59 Good · D 45–49 Fair · E 40–44 Pass · F 0–39 Fail'+(cf.next?' &nbsp; | &nbsp; <b>NEXT TERM BEGINS:</b> '+E(cf.next):'')+'</p>':(cf.next?'<p class="key"><b>NEXT TERM BEGINS:</b> '+E(cf.next)+'</p>':''))+
+  (ov&&ov.key!=null?ov.key:end?'<p class="key"><b>GRADE KEY:</b> A 70–100 Excellent · B 60–69 Very good · C 50–59 Good · D 45–49 Fair · E 40–44 Pass · F 0–39 Fail'+(cf.next?' &nbsp; | &nbsp; <b>NEXT TERM BEGINS:</b> '+E(cf.next):'')+'</p>':(cf.next?'<p class="key"><b>NEXT TERM BEGINS:</b> '+E(cf.next)+'</p>':''))+
   '<div class="dir"><div class="line"></div>'+E((cf.director||'').toUpperCase())+(cf.director?'<br>':'')+E(cf.dirTitle)+'</div></section>';
 }
 /* ---------- the child's answer script: the school's paper layout with this child's answers, marks and the correct answers ---------- */
@@ -1884,7 +2075,7 @@ const AS_CSS="@page{size:A4;margin:14mm}*{box-sizing:border-box}body{margin:0;fo
 function bpDoc(c,eid,key){
   const ex=c.exams.find(e=>e.id===eid);if(!ex)return '';
   const cf=rcCfg(),E=esc,L='abcdefghijklmnopqrstuvwxyz';
-  const m=markExam(ex,{},{},null);
+  const m=markExam(ex,{},{},null);m.total=examTotal(ex);
   const head='<header>'+(cf.logo?'<img src="'+E(cf.logo)+'" alt="">':'')+'<h1>'+E(W.school||'School name')+'</h1>'+(cf.addr?'<p class="ad">'+E(cf.addr)+'</p>':'')+'</header>'+
     '<h2>'+E([cf.termName,ex.title].filter(Boolean).join(' — '))+(cf.year?' ('+E(cf.year)+')':'')+(key?' — TEACHER’S COPY':'')+'</h2>'+
     '<div class="id"><span>NAME: '+(key?'':'__________________________')+'</span><span>CLASS: '+E(c.name.toUpperCase())+'</span><span>SUBJECT: '+E(String(ex.subject||'').toUpperCase())+'</span><span>DATE: '+(key?'':'__________')+'</span></div>'+
@@ -1916,7 +2107,7 @@ function asDoc(c,names,eid){
       '<h2>'+E([cf.termName,ex.title].filter(Boolean).join(' — '))+(cf.year?' ('+E(cf.year)+')':'')+'</h2>'+
       '<div class="id"><span>NAME: '+E(name.toUpperCase())+'</span><span>CLASS: '+E(c.name.toUpperCase())+'</span><span>SUBJECT: '+E(String(ex.subject||'').toUpperCase())+'</span><span>DATE: '+(r?E(new Date(r.submittedAt).toLocaleDateString('en-GB')):'')+'</span></div>';
     if(!r)return '<section class="sc">'+head+'<p>'+E(name)+' has no submitted answers for this paper.</p></section>';
-    const m=markExam(ex,r.ans||{},r.txt||{},MK[r.id]||null);
+    const m=markExam(ex,r.ans||{},r.txt||{},MK[r.id]||null,ex.draw?r.ord:null);
     const n=ex.questions.length;
     let ord=Array.isArray(r.ord)?r.ord.filter(i=>Number.isInteger(i)&&i>=0&&i<n):[];
     if(!ord.length)ord=ex.questions.map((q,i)=>i);
@@ -1957,7 +2148,7 @@ function asDoc(c,names,eid){
   return '<!doctype html><meta charset="utf-8"><title>'+E(ex.title+' answer scripts')+'</title><style>'+AS_CSS+'</style>'+names.map(one).join('');
 }
 
-const rcDoc=(c,names,kind)=>'<!doctype html><meta charset="utf-8"><title>'+esc(c.name+' report cards')+'</title><style>'+RC_CSS+'</style>'+names.map(n=>rcCard(c,n,kind)).join('');
+const rcDoc=(c,names,kind)=>'<!doctype html><meta charset="utf-8"><title>'+esc(c.name+' report cards')+'</title><style>'+RC_CSS+'</style>'+names.map(n=>kind==='annual'&&rcAnnualCard?rcAnnualCard(c,n):rcCard(c,n,kind==='annual'?'end':kind)).join('');
 function rcPrint(html){
   if(window.__xdPrintHook)return window.__xdPrintHook(html);
   const f=document.createElement('iframe');f.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';document.body.appendChild(f);
@@ -1973,7 +2164,7 @@ function asCard(c,names){
     '<div class="row" style="gap:6px;flex-wrap:wrap">'+names.map(n=>resFor(c.id,n,eid)?'<button class="btn small" data-act="as-print" data-e="'+esc(eid)+'" data-n="'+esc(n)+'">'+esc(n)+'</button>':'<span class="btn small" style="opacity:.45" title="Has not sat this paper">'+esc(n)+'</span>').join('')+'</div></section>';
 }
 function tabReport(c){
-  const st=S.st,rc=rcSt(),cf=rcCfg(),kind=rc.kind;
+  const st=S.st,rc=rcSt(),cf=rcCfg(),kindRaw=rc.kind,kind=kindRaw==='annual'?'end':kindRaw;
   const names=classNames(c).roster;
   const mids=c.exams.filter(e=>e.term==='mid'),ends=c.exams.filter(e=>e.term==='end');
   const tagged=(kind==='mid'?mids:mids.concat(ends));
@@ -1992,10 +2183,10 @@ function tabReport(c){
     '<div class="grow"><div class="row" style="justify-content:space-between"><b>'+esc(n)+'</b>'+sts+'</div><div class="row" style="gap:8px;margin-top:6px"><label class="btn small" style="cursor:pointer">'+(ph?'Change photo':'Add photo')+'<input type="file" accept="image/*" data-rcphoto="'+esc(n)+'" hidden></label>'+(ph?'<button class="btn small" data-act="rc-nophoto" data-n="'+esc(n)+'">Remove</button>':'')+'<button class="btn small" data-act="rc-prev" data-n="'+esc(n)+'">Preview</button><button class="btn small primary" data-act="rc-print" data-n="'+esc(n)+'">Print</button></div></div></div>'+
     '<div class="setgrid"><label class="f">Age<input type="text" data-kid="age" data-n="'+esc(n)+'" value="'+esc(k.age||'')+'" placeholder="10 years"></label><label class="f">Reg. no<input type="text" data-kid="reg" data-n="'+esc(n)+'" value="'+esc(k.reg||'')+'"></label></div>'+
     '<label class="f">Class teacher’s comment<textarea rows="2" data-kid="tc" data-n="'+esc(n)+'">'+esc(k.tc||'')+'</textarea></label><label class="f">Head teacher’s comment<textarea rows="2" data-kid="hc" data-n="'+esc(n)+'">'+esc(k.hc||'')+'</textarea></label>'+aiBoxHtml(c,n,k)+'</article>';}).join('');
-  const prev=rc.prev&&names.some(n=>nk(n)===nk(rc.prev))?'<section class="card stack"><div class="row" style="justify-content:space-between"><h3>Preview: '+esc(rc.prev)+'</h3><button class="btn small" data-act="rc-prevx">Close</button></div><div style="overflow:auto;border:1px solid #ccc;border-radius:6px"><iframe title="Card preview" style="width:210mm;height:297mm;border:0;transform-origin:top left" srcdoc="'+esc(rcDoc(c,[rc.prev],kind))+'"></iframe></div></section>':'';
-  return '<div class="stack"><section class="card stack"><h2>Report cards</h2><div class="row" style="gap:10px;align-items:center"><label class="f" style="margin:0">Card<select id="rc-kind" data-rckind><option value="end"'+(kind==='end'?' selected':'')+'>End-of-term (mid-term + exam)</option><option value="mid"'+(kind==='mid'?' selected':'')+'>Mid-term</option></select></label><label class="f" style="margin:0">Class teacher’s name<input type="text" data-clt="1" value="'+esc(c.teacher||'')+'"></label><button class="btn primary" data-act="rc-printall"'+(names.length?'':' disabled')+'>Print the whole class ('+names.length+')</button></div>'+'<label class="check"><input type="checkbox" data-rcpos="1"'+((c.rcPos==null?c.showRank:c.rcPos)?' checked':'')+'>Print each child’s position in class on the card (only for children with every subject marked)</label>'+warn+
+  const prev=rc.prev&&names.some(n=>nk(n)===nk(rc.prev))?'<section class="card stack"><div class="row" style="justify-content:space-between"><h3>Preview: '+esc(rc.prev)+'</h3><button class="btn small" data-act="rc-prevx">Close</button></div><div style="overflow:auto;border:1px solid #ccc;border-radius:6px"><iframe title="Card preview" style="width:210mm;height:297mm;border:0;transform-origin:top left" srcdoc="'+esc(rcDoc(c,[rc.prev],kindRaw))+'"></iframe></div></section>':'';
+  return '<div class="stack"><section class="card stack"><h2>Report cards</h2><div class="row" style="gap:10px;align-items:center"><label class="f" style="margin:0">Card<select id="rc-kind" data-rckind><option value="end"'+(kindRaw==='end'?' selected':'')+'>End-of-term (mid-term + exam)</option><option value="mid"'+(kindRaw==='mid'?' selected':'')+'>Mid-term</option>'+rcKindOpts(kindRaw)+'</select></label><label class="f" style="margin:0">Class teacher’s name<input type="text" data-clt="1" value="'+esc(c.teacher||'')+'"></label><button class="btn primary" data-act="rc-printall"'+(names.length?'':' disabled')+'>Print the whole class ('+names.length+')</button></div>'+'<label class="check"><input type="checkbox" data-rcpos="1"'+((c.rcPos==null?c.showRank:c.rcPos)?' checked':'')+'>Print each child’s position in class on the card (only for children with every subject marked)</label>'+warn+
     '<p class="muted sm">Photos are kept on this computer, so add them and print from the same one. Print from your browser, choose “Save as PDF” if you want a file.</p>'+(rc.msg?'<div class="note">'+esc(rc.msg)+'</div>':'')+(rc.err?'<div class="err" role="alert">'+esc(rc.err)+'</div>':'')+'</section>'+setup+prev+
-    cmTop(c,names)+asCard(c,names)+
+    termBox(c,names)+cmTop(c,names)+asCard(c,names)+
     (names.length?rows:'<section class="card">'+emptyBox('The class list is empty','Add the children first.','')+'</section>')+'</div>';
 }
 /*@end*/
@@ -2009,7 +2200,7 @@ function pageChild(){
   const trs=c.exams.map((e,i)=>{
     const r=row.cells[i];
     if(!r)return '<tr><td>'+esc(e.subject)+'</td><td class="muted">'+esc(e.title)+'</td><td colspan="6" class="muted">Not written yet</td><td></td></tr>';
-    return '<tr><td><b>'+esc(e.subject)+'</b></td><td class="muted">'+esc(e.title)+'</td><td class="num mono">'+fmtN(r.score)+'/'+fmtN(r.total)+'</td><td class="num mono">'+r.pct+'%</td><td><span class="badge '+(r.pass?'ok':'bad')+'">'+r.grade+'</span></td><td>'+(r.prov?'<span class="prov-badge">Provisional</span>':(r.pass?'Pass':'Below pass mark'))+'</td><td class="sm">'+esc(fmtDate(r.submittedAt))+'</td><td class="num mono">'+fmtClock(r.usedSec)+(r.auto?' *':'')+'</td><td>'+(ME?'':st.conf==='rr:'+r.id?'<button class="btn danger small" data-act="retake" data-e="'+esc(e.id)+'">Confirm</button>':'<button class="btn small" data-act="retake" data-e="'+esc(e.id)+'">Allow retake</button>')+'</td></tr>';
+    return '<tr><td><b>'+esc(e.subject)+'</b></td><td class="muted">'+esc(e.title)+'</td><td class="num mono">'+fmtN(r.score)+'/'+fmtN(r.total)+'</td><td class="num mono">'+r.pct+'%</td><td><span class="badge '+(r.pass?'ok':'bad')+'">'+r.grade+'</span></td><td>'+(r.prov?'<span class="prov-badge">Provisional</span>':(r.pass?'Pass':'Below pass mark'))+'</td><td class="sm">'+esc(fmtDate(r.submittedAt))+'</td><td class="num mono">'+fmtClock(r.usedSec)+(r.auto?' *':'')+integBadge(r)+'</td><td>'+(ME?'':st.conf==='rr:'+r.id?'<button class="btn danger small" data-act="retake" data-e="'+esc(e.id)+'">Confirm</button>':'<button class="btn small" data-act="retake" data-e="'+esc(e.id)+'">Allow retake</button>')+'</td></tr>';
   }).join('');
   const answers=c.exams.map((e,i)=>{
     const r=row.cells[i];if(!r)return '';
@@ -2365,7 +2556,7 @@ function pageTeachers(){
     editor='<section class="card stack"><h2>'+(f.id?'Edit teacher':'Add a teacher')+'</h2>'+
       '<label class="f">Name<span class="hint">Teachers sign in with this name, so keep it simple and unique. It is also what the change record shows.</span><input id="tc-name" type="text" data-bind="st.tc.form.name" value="'+esc(f.name)+'" autocomplete="off"></label>'+
       '<label class="f">Passcode<span class="hint">'+(f.id?'Leave empty to keep their current passcode. ':'')+'At least 8 characters. It cannot be the same as your own.</span><input id="tc-pass" type="password" data-bind="st.tc.form.pass" value="'+esc(f.pass||'')+'" autocomplete="new-password"></label>'+
-      '<div class="stack" style="gap:8px"><b>Form teacher of</b><p class="muted sm">Can see every child in the class (or one arm) and change any mark for them.</p>'+f.form.map(frow).join('')+'<div><button class="btn small" data-act="tc-add-row" data-w="form">Add a class</button></div></div>'+
+      officerBox(f)+'<div class="stack" style="gap:8px"><b>Form teacher of</b><p class="muted sm">Can see every child in the class (or one arm) and change any mark for them.</p>'+f.form.map(frow).join('')+'<div><button class="btn small" data-act="tc-add-row" data-w="form">Add a class</button></div></div>'+
       '<div class="stack" style="gap:8px"><b>Subject teacher for</b><p class="muted sm">Can see and mark that subject for the whole class, and nothing else.</p>'+f.subj.map(srow).join('')+'<div><button class="btn small" data-act="tc-add-row" data-w="subj">Add a subject</button></div></div>'+
       '<div class="row"><button class="btn primary" data-act="tc-save"'+(tc.busy?' disabled':'')+'>'+(tc.busy?'Saving…':'Save teacher')+'</button><button class="btn" data-act="tc-cancel">Cancel</button></div></section>';
   }
@@ -2401,8 +2592,9 @@ async function tcSave(){
   if((!f.id&&pass.length<8)||(pass&&pass.length<8)){tc.err='The passcode needs at least 8 characters.';render();return;}
   const entry={name,form:f.form.filter(x=>x.cid).map(x=>({cid:x.cid,arm:x.arm||''})),subj:f.subj.filter(x=>x.cid&&x.subject).map(x=>({cid:x.cid,subject:x.subject}))};
   if(f.id)entry.id=f.id;
+  if(f.officer)entry.officer=true;
   if(pass)entry.h2=await hash2(pass);
-  const list=tc.list.map(t=>t.id===f.id?entry:{id:t.id,name:t.name,form:t.form,subj:t.subj});
+  const list=tc.list.map(t=>t.id===f.id?entry:{id:t.id,name:t.name,form:t.form,subj:t.subj,officer:t.officer});
   if(!f.id)list.push(entry);
   if(await tcPut(list)){tc.form=null;st.flash=name+' saved.';render();}
 }
@@ -2441,7 +2633,7 @@ function pageSetup(){
   (st.pending&&st.pending.kind==='setup'?'<div class="note stack"><span>Replace the setup on this device with <b>'+esc(st.pending.name)+'</b>? It then shows as unpublished.</span><div class="row"><button class="btn danger small" data-act="apply-setup">Replace</button><button class="btn small" data-act="cancel-pending">Cancel</button></div></div>':'')+'</section>'+
   '<section class="card stack"><div><h2>Results on this device</h2><p class="muted" style="margin-top:4px"><b class="mono">'+R.length+'</b> result'+(R.length===1?'':'s')+' saved here. To gather several devices, save a results file from each and merge them on one.</p></div>'+
   '<div class="row"><button class="btn" data-act="export-results">Save results file</button><label class="btn" style="display:inline-block">Merge results file<input id="f-results" type="file" accept=".json,application/json" hidden></label>'+(st.conf==='clear'?'<button class="btn danger small" data-act="clear-results">Yes, remove all results</button><button class="btn small" data-act="conf-no">Cancel</button>':'<button class="btn danger small" data-act="clear-results">Clear results</button>')+'</div></section>'+
-  wlCard()+
+  wlCard()+auditCard()+
   '<section class="card stack"><h2>School and passcode</h2>'+
   '<label class="f">School name<span class="hint">Shown under the ExamDesk name</span><input id="s-school" type="text" data-set="school" value="'+esc(W.school||'')+'"></label>'+
   '<label class="f">New passcode<input id="s-newpass" type="password" data-bind="st.newPass" value="'+esc(st.newPass)+'" autocomplete="new-password"></label><div><button class="btn" data-act="set-pass">Change passcode</button></div></section></div>';
@@ -2634,6 +2826,18 @@ async function act(a,el){
       let done=0,fail=0;cm.msg='';cm.err='';
       for(const n of names){cm.msg='Writing… '+done+' of '+names.length;render();const okk=await cmWrite(c,n,'class',true);if(okk)done++;else{fail++;if(/No AI comments|not switched|not accepted|licence/.test(cm.err||''))break;}}
       cm.msg=done+' comment'+(done===1?'':'s')+' written'+(fail?'. '+fail+' could not be written: '+(cm.err||'try again')+'.':'. Read each one before you print.');render();break;}
+    case 'tm-ask':{rcSt().closeConf=el.dataset.w==='all'?'all':'this';render();break;}
+    case 'tm-cancel':{rcSt().closeConf='';render();break;}
+    case 'tm-close':{const c=cls(st.cid);if(!c)break;const all=el.dataset.all==='1';(all?W.classes:[c]).forEach(x=>closeTermFor(x));
+      if(all){const cf=rcCfg(),nx=TERM_NEXT[String(cf.termName||'').toUpperCase()];if(nx){W.report=Object.assign({},W.report||{});W.report.termName=nx;}}
+      rcSt().closeConf='';saveW();rcSt().msg='Term closed'+(all?' for every class':' for '+c.name)+'.';render();break;}
+    case 'pm-ask':{rcSt().promoConf=true;render();break;}
+    case 'pm-cancel':{rcSt().promoConf=false;render();break;}
+    case 'pm-go':{await promoteAll();rcSt().msg='The children have been moved up.';render();break;}
+    case 'sch-xlsx':{const d=schoolData();await saveSheets('School broadsheet',[
+      {name:'By class',rows:[['Class','Children','Papers','Results in','Possible','Average %','Pass rate %','Top child','Top average %']].concat(d.cl.map(x=>[x.c.name,x.children,x.papers,x.got,x.poss,x.avg==null?'':x.avg,x.passRate==null?'':x.passRate,x.best?x.best.name:'',x.best?x.best.avg:'']))},
+      {name:'By subject',rows:[['Subject','Classes','Written','Average %','Pass rate %']].concat(d.sj.map(x=>[x.subject,x.classes,x.n,x.avg==null?'':x.avg,x.passRate==null?'':x.passRate]))}]);break;}
+    case 'au-load':{await auLoad();break;}
     case 'wl-reset':{if(W.wl){delete W.wl.color;saveW();}render();break;}
     case 'rc-prev':{rcSt().prev=el.dataset.n;render();break;}
     case 'rc-prevx':{rcSt().prev='';render();break;}
@@ -2691,7 +2895,7 @@ async function act(a,el){
       st.flash=saved?saved+' question'+(saved===1?'':'s')+' saved to the question bank.'+(list.length<ex.questions.length?' Questions already there were skipped.':''):(b.err||'Everything in this paper is already in the bank.');
       render();break;}
     case 'tc-new':st.tc.form={id:'',name:'',pass:'',form:[],subj:[]};st.tc.err='';render();break;
-    case 'tc-edit':{const t=st.tc.list.find(x=>x.id===el.dataset.id);if(t){st.tc.form={id:t.id,name:t.name,pass:'',form:JSON.parse(JSON.stringify(t.form||[])),subj:JSON.parse(JSON.stringify(t.subj||[]))};st.tc.err='';}render();break;}
+    case 'tc-edit':{const t=st.tc.list.find(x=>x.id===el.dataset.id);if(t){st.tc.form={id:t.id,name:t.name,pass:'',form:JSON.parse(JSON.stringify(t.form||[])),subj:JSON.parse(JSON.stringify(t.subj||[])),officer:!!t.officer};st.tc.err='';}render();break;}
     case 'tc-cancel':st.tc.form=null;st.tc.err='';render();break;
     case 'tc-add-row':{
       const w=el.dataset.w,cid=(W.classes[0]||{}).id||'';
@@ -2931,7 +3135,7 @@ $app.addEventListener('change',async e=>{
     render();return;
   }
   if(t.dataset.asel!==undefined){rcSt().script=t.value;render();return;}
-  if(t.dataset.rckind!==undefined){rcSt().kind=t.value==='mid'?'mid':'end';render();return;}
+  if(t.dataset.rckind!==undefined){rcSt().kind=t.value==='mid'?'mid':t.value==='annual'&&hasTier('campus')?'annual':'end';render();return;}
   if(t.dataset.rcpos){const c=cls(st.cid);if(c){c.rcPos=t.checked;saveW();render();}return;}
   if(t.dataset.clt){const c=cls(st.cid);if(c){c.teacher=String(t.value).trim().slice(0,80);saveW();}return;}
   if(t.dataset.ai){const c=cls(st.cid);if(!c)return;const k=cmKid(c,t.dataset.n);k.ai[t.dataset.ai]=String(t.value).trim().slice(0,600);saveW();return;}
@@ -2956,6 +3160,7 @@ $app.addEventListener('change',async e=>{
   }
   if(t.dataset.ex){
     const c=cls(st.cid),ex=c&&c.exams.find(x=>x.id===t.dataset.ex),k=t.dataset.k;if(!ex)return;
+    if(k==='draw'){const nm=t.dataset.draw,us=secUnits(ex,nm).length,v=parseInt(t.value,10);ex.draw=ex.draw||{};if(!(v>=1)||v>=us)delete ex.draw[nm];else ex.draw[nm]=v;if(!Object.keys(ex.draw).length)delete ex.draw;applyDraw(ex);saveW();reindex();render();return;}
     if(k==='opensAt'||k==='closesAt'){const v=t.value?new Date(t.value).getTime():0;if(v)ex[k]=v;else delete ex[k];if(ex.opensAt&&ex.closesAt&&ex.closesAt<=ex.opensAt){delete ex[k];toast('The closing time must be after the opening time.');}saveW();render();return;}
     if(k==='term'){ex.term=t.value==='mid'||t.value==='end'?t.value:'';saveW();render();return;}
     if(t.type==='checkbox'){ex[k]=t.checked;}
@@ -2993,6 +3198,9 @@ $app.addEventListener('change',async e=>{
     saveW();return;
   }
   if(t.dataset.mkname){store.set(K_MARKER,cleanName(t.value));return;}
+  if(t.dataset.tcoff){if(st.tc&&st.tc.form)st.tc.form.officer=t.checked;return;}
+  if(t.dataset.pm!==undefined){pmSt()[t.dataset.pm]=t.value;return;}
+  if(t.dataset.pmx==='papers'){rcSt().promoPapers=t.checked;return;}
   if(t.dataset.wl){W.wl=Object.assign({},W.wl||{});if(t.dataset.wl==='on')W.wl.on=t.checked;else if(t.dataset.wl==='color')W.wl.color=t.value;saveW();render();return;}
   if(t.id==='wl-logo'&&t.files&&t.files[0]){try{W.report=Object.assign({},W.report||{});W.report.logo=await imgData(t.files[0],'logo');saveW();}catch(e){toast('That logo could not be read. Use a JPG or PNG.');}render();return;}
   if(t.dataset.set==='school'){W.school=cleanName(t.value);saveW();return;}

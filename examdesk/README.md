@@ -151,3 +151,6 @@ Tick **Keep the answers off the children's devices** in a paper's settings. Chil
 
 ## Set-up code (vendor)
 In the vendor console, give a site a **Set-up code** (Make one). The school types it once when it first saves to the server.
+
+## Campus plan
+Campus adds: white-label branding (logo, name, colour), random papers drawn from a question pool, annual report cards with year-end promotion, AI-drafted report card comments (preset chips plus the teacher's rough notes), an activity log with an exam officer role, an exam integrity log, and a School overview page with a downloadable broadsheet. AI comments need the AI key on the site, same as AI questions.

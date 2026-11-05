@@ -204,6 +204,30 @@ export function makeHandler(store, opts = {}) {
     const v = await store.get('sc:' + cid);
     return v ? JSON.parse(await gunzText(v)) : null;
   }
+  // ---- activity log (Campus and above): who changed what, kept in order. Recording never blocks the change itself.
+  async function audit(who, act, detail) {
+    try { await store.set('au:' + pad(Date.now()) + ':' + hexId('a'), JSON.stringify({ at: Date.now(), who, act, detail: String(detail || '').slice(0, 400) })); } catch (e) { /* the log must never block work */ }
+  }
+  function setupDiff(prev, next) {
+    const out = [];
+    const pc = new Map(((prev && prev.classes) || []).map((c) => [c.id, c])), nc = new Map(((next && next.classes) || []).map((c) => [c.id, c]));
+    for (const [id, c] of nc) if (!pc.has(id)) out.push('added class ' + c.name);
+    for (const [id, c] of pc) if (!nc.has(id)) out.push('removed class ' + c.name);
+    for (const [id, c] of nc) {
+      const o = pc.get(id);
+      if (!o) continue;
+      const oe = new Map((o.exams || []).map((e) => [e.id, e])), ne = new Map((c.exams || []).map((e) => [e.id, e]));
+      for (const [eid, e] of ne) {
+        const x = oe.get(eid);
+        if (!x) out.push(c.name + ': added paper ' + e.subject);
+        else if (!!x.open !== !!e.open) out.push(c.name + ': ' + (e.open ? 'opened' : 'closed') + ' ' + e.subject);
+      }
+      for (const [eid, e] of oe) if (!ne.has(eid)) out.push(c.name + ': removed paper ' + e.subject);
+      const d = (c.roster || []).length - (o.roster || []).length;
+      if (d) out.push(c.name + ': ' + (d > 0 ? '+' : '') + d + ' child' + (Math.abs(d) === 1 ? '' : 'ren'));
+    }
+    return out.length ? out.slice(0, 12).join('; ') + (out.length > 12 ? '; and ' + (out.length - 12) + ' more' : '') : 'saved (no structural change)';
+  }
   async function loadIdx() {
     const m = await loadMeta();
     if (!m) return null;
@@ -248,11 +272,13 @@ export function makeHandler(store, opts = {}) {
   const RANK = { core: 0, growth: 1, campus: 2, max: 3 };
   const growthOk = async () => { const l = await getLicence(); return !l || (RANK[l.plan] ?? 0) >= 1; };
   async function getTeachers() { try { return JSON.parse((await store.get('teachers')) || '[]'); } catch (e) { return []; } }
-  const pubTeacher = (t) => ({ id: t.id, name: t.name, form: t.form || [], subj: t.subj || [] });
+  const campusOk = async () => { const l = await getLicence(); return !l || (RANK[l.plan] ?? 0) >= 2; };
+  const pubTeacher = (t) => ({ id: t.id, name: t.name, form: t.form || [], subj: t.subj || [], officer: !!t.officer });
   const armOfS = (c, name) => { const m = c.armOf || {}, k = nk(name); for (const n of Object.keys(m)) if (nk(n) === k) return m[n] || ''; return ''; };
   function canAct(t, setup, r) {
     const c = ((setup && setup.classes) || []).find((x) => x.id === r.cid);
     if (!c) return false;
+    if (t.officer) return true; // exam officer: every class
     const ex = (c.exams || []).find((e) => e.id === r.eid), arm = armOfS(c, r.name);
     if ((t.form || []).some((f) => f.cid === c.id && (!f.arm || f.arm === arm))) return true;
     return !!ex && (t.subj || []).some((s) => s.cid === c.id && nk(s.subject) === nk(ex.subject));
@@ -286,7 +312,7 @@ export function makeHandler(store, opts = {}) {
   const candExam = (e) => (e.hideKey ? { ...e, hk: true, questions: (e.questions || []).map(hideQ) } : e);
   const candClass = (c) => { const o = { ...c, exams: (c.exams || []).filter((e) => live(e)).map(candExam) }; delete o.code; delete o.prevCodes; delete o.armOf; delete o.kids; return o; };
   const publicView = (setup) => ({ ...setup, pub: true, classes: (setup.classes || []).map(stubClass) });
-  const teacherView = (setup, t) => ({ ...setup, part: true, classes: (setup.classes || []).filter((c) => (t.form || []).some((f) => f.cid === c.id) || (t.subj || []).some((x) => x.cid === c.id)).map((c) => { const o = { ...c }; delete o.code; delete o.prevCodes; return o; }) });
+  const teacherView = (setup, t) => ({ ...setup, part: true, classes: (setup.classes || []).filter((c) => t.officer || (t.form || []).some((f) => f.cid === c.id) || (t.subj || []).some((x) => x.cid === c.id)).map((c) => { const o = { ...c }; delete o.code; delete o.prevCodes; return o; }) });
   // wrong class codes are counted per network address (a whole school shares one, so the allowance is generous)
   const UFAILS = opts.unlockFails ?? 40, ULOCK = opts.unlockLockMs ?? 5 * 60 * 1000;
   const ipKey = async (req) => 'ulock:' + (await sha('xd-ip:' + clientIp(req))).slice(0, 32);
@@ -418,12 +444,24 @@ export function makeHandler(store, opts = {}) {
         return c.ok ? json({ ok: true, role: 'admin' }) : c.locked ? bad(c) : json({ ok: false, none: !!c.none }, 401);
       }
 
+      if (path === '/api/audit' && req.method === 'GET') {
+        const c = await checkAdmin(req.headers.get('x-admin') || '');
+        if (!c.ok) return bad(c);
+        const lic = await getLicence();
+        if (!lic || (RANK[lic.plan] ?? 0) < 2) return json({ ok: false, error: 'plan' }, 403);
+        const keys = (await store.list('au:')).slice(-300).reverse();
+        const items = [];
+        for (const k of keys) { const v = await store.get(k); if (v) { try { items.push(JSON.parse(v)); } catch (e) { /* skip */ } } }
+        return json({ ok: true, items });
+      }
+
       if (path === '/api/passcode' && req.method === 'POST') {
         const { h2, newAuth } = await req.json();
         const c = await checkAdmin(h2);
         if (!c.ok) return bad(c);
         if (typeof newAuth !== 'string' || !HEX64.test(newAuth)) return json({ ok: false, error: 'bad' }, 400);
         await store.set('auth', await hashPw(newAuth));
+        await audit('Administrator', 'Passcode changed', '');
         return json({ ok: true });
       }
 
@@ -472,7 +510,9 @@ export function makeHandler(store, opts = {}) {
         const stamp = Math.max(Date.now(), cur + 1);
         setup.stamp = stamp;
         setup.adminHash = 'srv';
+        const prevS = await loadIdx().catch(() => null);
         await saveSetup(setup);
+        await audit('Administrator', 'Setup saved', setupDiff(prevS, setup));
         return json({ ok: true, stamp, warn, licence: licView(lic, setup, Date.now()) });
       }
 
@@ -538,6 +578,7 @@ export function makeHandler(store, opts = {}) {
         const c = await checkAdmin(req.headers.get('x-admin') || '');
         if (!c.ok) return bad(c);
         for (const p of ['r:', 'i:', 'n:', 'm:', 'mp:']) for (const k of await store.list(p)) await store.delete(k);
+        await audit('Administrator', 'All results cleared', '');
         return json({ ok: true });
       }
 
@@ -662,9 +703,10 @@ export function makeHandler(store, opts = {}) {
           const id = prev ? prev.id : 'tc' + [...crypto.getRandomValues(new Uint8Array(8))].map((x) => x.toString(16).padStart(2, '0')).join('');
           const form = (Array.isArray(t.form) ? t.form : []).slice(0, 100).map((f) => ({ cid: str(f && f.cid, 64), arm: str(f && f.arm, 40) })).filter((f) => f.cid);
           const subj = (Array.isArray(t.subj) ? t.subj : []).slice(0, 300).map((x) => ({ cid: str(x && x.cid, 64), subject: str(x && x.subject, 80) })).filter((x) => x.cid && x.subject);
-          out.push({ id, name, auth, form, subj });
+          out.push({ id, name, auth, form, subj, officer: !!(t && t.officer) && (await campusOk()) });
         }
         await store.set('teachers', JSON.stringify(out));
+        await audit('Administrator', 'Teachers changed', out.map((x) => x.name + (x.officer ? ' (exam officer)' : '')).join(', '));
         // a teacher who was removed can no longer sign in; their lock records go too
         for (const o of old) if (!out.some((x) => x.id === o.id)) await store.delete('lock:' + o.id);
         return json({ ok: true, teachers: out.map(pubTeacher) });

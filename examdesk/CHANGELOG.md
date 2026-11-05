@@ -1,3 +1,13 @@
+## Campus plan
+- **White-label.** The school's own logo, name and colour replace ExamDesk wording on every page, the candidate screen and printouts.
+- **Stores 1,000 children comfortably.** Data is mirrored to the browser's database as well as local storage, so large rolls and result sets do not hit storage limits.
+- **AI report card comments.** Pick preset chips (good but could be better, not very good, pays attention in class, very kind, and so on), add rough notes, and the AI smooths them into a comment. One child or the whole class; counted against the site's comment allowance.
+- **Random papers from a question pool.** Set how many questions each child gets; every child is drawn a different paper, and the intro page shows the drawn count.
+- **Annual report card and year-end promotion.** Close each term, print the annual card (average as a percentage, class position optional), then promote children to the next class in one step, with a confirmation.
+- **Activity log and exam officer role.** Setup changes, passcode changes, result clearing and teacher changes are logged. A teacher can be an exam officer with school-wide marking rights but no access to the log.
+- **Exam integrity log.** While a child writes, the page notes each time it was left and for how long, and when the device went offline. Shown as a flag on results and a table in Analysis. It is a prompt to look, not a verdict.
+- **School overview.** One page for the administrator: every class, subject averages across classes, pass rates, top child per class, papers nobody has written, and a downloadable school broadsheet (.xlsx).
+
 ## Scheduled papers, blank papers, answer keys off devices, tighter security
 - **Scheduled papers.** Each paper can have an *Opens at* and *Closes at* time. Switch the paper on, set the times, and it opens and closes itself. Devices receive the paper up to 12 hours early (so a device prepared the evening before works) but keep it shut until the opening time. A child already writing when it closes may finish.
 - **Blank question paper and teacher's copy** (Growth and above): Report cards tab → Printouts for a paper. Same layout as the answer script; the teacher's copy marks the right answers.
