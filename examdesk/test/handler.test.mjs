@@ -717,8 +717,22 @@ ok(r.s === 200, 'B: a suspended school can still read the bank');
   const stamp = r.j.stamp;
   const s2 = JSON.parse(JSON.stringify(s1)); s2.classes[0].exams[0].open = true; s2.classes[1].roster.push('New Child');
   r = await cA2('PUT', '/api/setup', { setup: s2, baseStamp: stamp }, { 'x-admin': A });
+  const stamp2 = r.j.stamp;
   r = await cA2('GET', '/api/audit', null, { 'x-admin': A });
   ok(r.s === 200 && r.j.items.length >= 2 && /opened Maths/.test(r.j.items[0].detail) && /\+1 child/.test(r.j.items[0].detail), 'A: the log says what changed, newest first: ' + (r.j.items[0] && r.j.items[0].detail));
+  // teacher-entered scores: saved with the setup, audited, and never offered to candidates
+  {
+    const s3 = JSON.parse(JSON.stringify(s2)); s3.classes[0].exams.push({ id: 'x1', ext: true, subject: 'English', title: 'Mid', max: 20, scores: {}, abs: {}, questions: [], open: false, duration: 0, passMark: 50 });
+    r = await cA2('PUT', '/api/setup', { setup: s3, baseStamp: stamp2 }, { 'x-admin': A });
+    ok(r.s === 200, 'A: a paper of entered scores is accepted: ' + r.s);
+    const s4 = JSON.parse(JSON.stringify(s3)); s4.classes[0].exams[1].scores = { 'Okafor Ngozi': 17 };
+    r = await cA2('PUT', '/api/setup', { setup: s4, baseStamp: r.j.stamp }, { 'x-admin': A });
+    ok(r.s === 200, 'A: entered scores save');
+    r = await cA2('GET', '/api/audit', null, { 'x-admin': A });
+    ok(/entered scores for English/.test(r.j.items[0].detail), 'A: the log records entered scores: ' + r.j.items[0].detail);
+    r = await cA2('GET', '/api/setup', null, {});
+    ok(r.s === 200 && !JSON.stringify(r.j).includes('English'), 'A: candidates never see an entered-scores paper');
+  }
   r = await cA2('GET', '/api/audit', null, { 'x-admin': B });
   ok(r.s === 401, 'A: only the administrator can read the log');
   await cA2('PUT', '/api/licence', { plan: 'growth', cap: 500, paidUntil: Date.now() + 90 * 86400000 }, V);

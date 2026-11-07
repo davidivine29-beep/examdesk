@@ -1,3 +1,9 @@
+## Scores entered by the teacher (Growth and above)
+- New on the Papers tab: **Scores entered by the teacher**. For a mid-term or exam written on paper or elsewhere, add a paper (subject, title, out of, mid-term or end-of-term), then type the marks in, paste a column ("Name, score" or scores in class-list order), or download and re-upload a score sheet (.xlsx/.csv).
+- Entered scores count on the register, school overview, broadsheet and report cards exactly like CBT papers, and can be mixed with them on one card.
+- A blank score stays blank: that child's report card stays incomplete until it is filled. Type A for absent (counts as 0).
+- Admin only; never shown to candidates. Closing the term clears entered-score papers along with the tags. Campus activity log records "entered scores".
+
 ## AI allowances and comment packs
 - Per-term AI generations are now Growth 100, Campus 400, Campus Max 800. Comments: Campus 1,500, Campus Max 8,000.
 - **Comment packs.** The vendor console has **Add AI comments** (+500, +1,000, +2,500). Bought comments never expire, survive a new term, and are used after the term allowance.

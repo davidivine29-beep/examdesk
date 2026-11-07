@@ -750,7 +750,7 @@ function saveW(){
   applyBrand();
 }
 /* White-label (Campus and above) replaces the ExamDesk name and mark with the school's own. The hooks below do nothing on lower plans. */
-let wlOn=()=>false,wlCard=()=>'',wlDom=()=>{},wlColor=()=>{},aiBoxHtml=()=>'',cmTop=()=>'',officerBox=()=>'',auditCard=()=>'',integBadge=()=>'',integCard=()=>'',schoolPage=null,schoolNav=()=>[],drawCard=()=>'',termBox=()=>'',rcKindOpts=()=>'',rcAnnualCard=null;
+let wlOn=()=>false,wlCard=()=>'',wlDom=()=>{},wlColor=()=>{},aiBoxHtml=()=>'',cmTop=()=>'',officerBox=()=>'',auditCard=()=>'',integBadge=()=>'',integCard=()=>'',schoolPage=null,schoolNav=()=>[],extRes=()=>null,extCard=()=>'',extForm=()=>'',extAct=()=>{},extChange=()=>false,drawCard=()=>'',termBox=()=>'',rcKindOpts=()=>'',rcAnnualCard=null;
 /*@tier campus*/
 wlOn=()=>!!(W.wl&&W.wl.on);
 wlColor=()=>{
@@ -868,6 +868,7 @@ function closeTermFor(c){
   c.hist=(c.hist||[]).filter(h=>!(h.label===label&&h.year===year));
   c.hist.push({label,year,per:per||100,at:Date.now(),rows});
   c.exams.forEach(e=>{if(e.term){e.term='';e.open=false;}});
+  c.exams=c.exams.filter(e=>!e.ext);   // scores typed in from outside belong to the term just closed
 }
 const nextClassId=c=>{
   const m=/^(.*?)(\d+)\s*$/.exec(String(c.name||'').trim());if(!m)return '';
@@ -1052,7 +1053,7 @@ function canActR(r){
 }
 const myClasses=()=>ME&&!ME.officer?W.classes.filter(c=>(ME.form||[]).some(f=>f.cid===c.id)||(ME.subj||[]).some(x=>x.cid===c.id)):W.classes;
 const authHdr=()=>{const h2=ses.get(K_H2);if(!h2)return {};return ME?{'x-admin':h2,'x-user':ME.id}:{'x-admin':h2};};
-const resFor=(cid,name,eid)=>{const r=IDX.get(cid+'|'+nk(name)+'|'+eid)||null;return r&&canActR(r)?r:null;};
+const resFor=(cid,name,eid)=>{let r=IDX.get(cid+'|'+nk(name)+'|'+eid)||null;if(!r){const c=cls(cid),ex=c&&c.exams.find(e=>e.id===eid);if(ex&&ex.ext)r=extRes(ex,cid,name);}return r&&canActR(r)?r:null;};
 reindex();
 
 const markedCount=e=>e.questions.filter(q=>qMarkable(q)).length;
@@ -1071,6 +1072,7 @@ function drawCount(e,idx){
   return tot;
 }
 function examTotal(e){
+  if(e.ext)return e.max||0;
   if(!e.draw)return r2(e.questions.reduce((a,q)=>a+(qMarkable(q)?qMax(q):0),0));
   let tot=0;const seen=new Set();
   e.questions.forEach(q=>{const n=q.section||'';if(seen.has(n))return;seen.add(n);
@@ -1880,6 +1882,7 @@ function tabRegister0(c){
 function tabPapers(c){
   const st=S.st;
   const list=c.exams.length?c.exams.map(ex=>{
+    if(ex.ext)return extCard(c,ex);
     const n=ex.questions.length,nm=unkeyed(ex);
     const wrote=c.roster.filter(nm2=>resFor(c.id,nm2,ex.id)).length;
     const chk=(k,l)=>'<label class="check"><input type="checkbox" data-ex="'+esc(ex.id)+'" data-k="'+k+'"'+(ex[k]?' checked':'')+'>'+l+'</label>';
@@ -1900,7 +1903,7 @@ function tabPapers(c){
       '<div class="row" style="margin-top:14px">'+(hasTier('growth')&&SA&&SRVS.on&&!ME?'<button class="btn small" data-act="bank-save-exam" data-id="'+esc(ex.id)+'">Save to the question bank</button>':'')+(st.conf==='del:'+ex.id?'<button class="btn danger small" data-act="del-exam" data-id="'+esc(ex.id)+'">Yes, delete this paper</button><button class="btn small" data-act="conf-no">Cancel</button>':'<button class="btn danger small" data-act="del-exam" data-id="'+esc(ex.id)+'">Delete paper</button>')+'</div></details></article>';
   }).join(''):'<section class="card">'+emptyBox('No papers in '+c.name+' yet','Upload the CBT .docx or paste the text below. New papers stay closed until you open them.')+'</section>';
   const imp=st.imp?impPreview(c):'';
-  return '<div class="stack">'+list+
+  return '<div class="stack">'+list+extForm(c)+
   '<section class="card stack"><div><h2>Add papers to '+esc(c.name)+'</h2><p class="muted" style="margin-top:4px">Use the CBT upload .docx, or paste the same structure as text.</p></div>'+
   '<label class="drop" id="drop-docx"><input id="f-docx" type="file" accept=".docx" hidden><b>Choose a .docx paper</b><span>or drop it here</span></label>'+
   '<label class="f">Or paste text<textarea id="t-paste" data-bind="st.paste" placeholder="# Mid-Term Test&#10;## Basic Science&#10;### Section A: Objectives&#10;1. The organ that pumps blood is the&#10;a. lungs&#10;b. kidney&#10;c. heart [CORRECT]&#10;d. liver">'+esc(st.paste)+'</textarea></label>'+
@@ -2156,7 +2159,7 @@ function rcPrint(html){
   setTimeout(()=>{try{f.contentWindow.focus();f.contentWindow.print();}catch(e){}setTimeout(()=>f.remove(),120000);},400);
 }
 function asCard(c,names){
-  const rc=rcSt(),exs=c.exams;
+  const rc=rcSt(),exs=c.exams.filter(e=>!e.ext);
   if(!exs.length)return '';
   const eid=exs.some(e=>e.id===rc.script)?rc.script:exs[0].id;
   const done=names.filter(n=>resFor(c.id,n,eid));
@@ -2203,7 +2206,7 @@ function pageChild(){
     return '<tr><td><b>'+esc(e.subject)+'</b></td><td class="muted">'+esc(e.title)+'</td><td class="num mono">'+fmtN(r.score)+'/'+fmtN(r.total)+'</td><td class="num mono">'+r.pct+'%</td><td><span class="badge '+(r.pass?'ok':'bad')+'">'+r.grade+'</span></td><td>'+(r.prov?'<span class="prov-badge">Provisional</span>':(r.pass?'Pass':'Below pass mark'))+'</td><td class="sm">'+esc(fmtDate(r.submittedAt))+'</td><td class="num mono">'+fmtClock(r.usedSec)+(r.auto?' *':'')+integBadge(r)+'</td><td>'+(ME?'':st.conf==='rr:'+r.id?'<button class="btn danger small" data-act="retake" data-e="'+esc(e.id)+'">Confirm</button>':'<button class="btn small" data-act="retake" data-e="'+esc(e.id)+'">Allow retake</button>')+'</td></tr>';
   }).join('');
   const answers=c.exams.map((e,i)=>{
-    const r=row.cells[i];if(!r)return '';
+    const r=row.cells[i];if(!r||e.ext)return '';
     return '<details data-dx="a'+esc(e.id)+'"><summary>'+esc(e.subject)+' answers'+(r.prov?' · provisional':'')+'</summary>'+reviewList(c,e,r,name)+'</details>';
   }).join('');
   return '<div style="'+acStyle(c)+'"><button class="btn small ghost" data-act="back-class" style="margin-bottom:8px">← '+esc(c.name)+' register</button>'+
@@ -2254,6 +2257,7 @@ function qPreview(q,i){
   return '<li class="pv-q"><b>'+esc(lab)+'.</b> '+tag+esc(q.text)+mk+tail+'</li>';
 }
 function examSummary(e){
+  if(e.ext)return 'Entered by the teacher · '+fmtN(e.max||0)+' marks';
   const n=t=>e.questions.filter(q=>qType(q)===t).length;
   const bits=[];
   if(n('obj'))bits.push(n('obj')+' multiple choice');
@@ -2380,6 +2384,142 @@ function tabMarking(c){
 }
 
 
+/*@tier growth*/
+/* Scores typed in from outside ExamDesk (a mid-term written on paper, an exam sat elsewhere). Admin only. A blank score stays blank, so the report card stays incomplete until it is filled. */
+const extGet=(ex,name)=>{const k=nk(name);for(const n of Object.keys(ex.scores||{}))if(nk(n)===k)return {v:ex.scores[n],a:false};for(const n of Object.keys(ex.abs||{}))if(ex.abs[n]&&nk(n)===k)return {v:0,a:true};return null;};
+extRes=(ex,cid,name)=>{
+  const g=extGet(ex,name);if(!g||!(ex.max>0))return null;
+  const pct=Math.round(g.v/ex.max*100);
+  return {id:'ext:'+ex.id+'|'+nk(name),cid,eid:ex.id,name,score:g.v,total:ex.max,pct,pass:pct>=(ex.passMark==null?50:ex.passMark),grade:gradeOf(pct),prov:false,ext:true,absent:g.a,submittedAt:0};
+};
+function extSet(ex,name,val){
+  const k=nk(name);ex.scores=ex.scores||{};ex.abs=ex.abs||{};
+  Object.keys(ex.scores).forEach(n=>{if(nk(n)===k)delete ex.scores[n];});Object.keys(ex.abs).forEach(n=>{if(nk(n)===k)delete ex.abs[n];});
+  if(val==='abs')ex.abs[name]=true;else if(typeof val==='number')ex.scores[name]=val;
+}
+/* '' clears, 'abs' marks absent, a number must sit between 0 and the paper's total, anything else is refused (undefined) */
+function extParse(txt,max){
+  const t=String(txt==null?'':txt).trim();if(!t)return '';
+  if(/^(a|abs|absent)$/i.test(t))return 'abs';
+  const v=Number(t.replace(',','.'));if(!isFinite(v)||v<0||v>max)return undefined;
+  return Math.round(v*100)/100;
+}
+function extApply(c,ex,pairs){
+  let ok=0;const bad=[],lost=[];
+  pairs.forEach(([nm,raw])=>{
+    const n=c.roster.find(x=>nk(x)===nk(nm));
+    if(!n){lost.push(nm);return;}
+    const v=extParse(raw,ex.max);
+    if(v===undefined){bad.push(nm);return;}
+    extSet(ex,n,v);ok++;
+  });
+  saveW();reindex();
+  return {ok,bad,lost};
+}
+function extReport(r){
+  const bits=[r.ok+' score'+(r.ok===1?'':'s')+' saved'];
+  if(r.lost.length)bits.push(r.lost.length+' name'+(r.lost.length>1?'s':'')+' not on the class list ('+r.lost.slice(0,3).join(', ')+(r.lost.length>3?'…':'')+')');
+  if(r.bad.length)bits.push(r.bad.length+' not a valid mark ('+r.bad.slice(0,3).join(', ')+(r.bad.length>3?'…':'')+')');
+  return bits.join('. ')+'.';
+}
+function extPairs(text,c){
+  const lines=String(text||'').split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  const bare=l=>/^(a|abs|absent|\d+([.,]\d+)?)$/i.test(l);
+  if(lines.length&&lines.every(bare)){
+    if(lines.length!==c.roster.length)return {err:'You pasted '+lines.length+' scores but the class has '+c.roster.length+' children. Paste the name and score together, or one score per child in class-list order.'};
+    return {pairs:lines.map((l,i)=>[c.roster[i],l])};
+  }
+  const pairs=[];
+  lines.forEach((l,i)=>{
+    const m=l.match(/^(.*?)[\t;,]\s*([^\t;,]*)\s*$/)||l.match(/^(.*\S)\s+(\S+)$/);
+    if(!m)return;
+    if(i===0&&!bare(m[2])&&!c.roster.some(x=>nk(x)===nk(m[1])))return;   // a header line
+    pairs.push([m[1].trim(),m[2].trim()]);
+  });
+  return pairs.length?{pairs}:{err:'Nothing could be read. Paste one child per line, like: Ada Okafor, 34'};
+}
+extChange=(t,file)=>{
+  const st=S.st,c=cls(st.cid),ex=c&&c.exams.find(x=>x.id===t.dataset.xe&&x.ext);if(!ex)return false;
+  if(file){
+    return (async()=>{
+      try{
+        const sheets=await readWorkbook(t.files[0]);const rows=(sheets[0]&&sheets[0].rows)||[];
+        let nc=0,sc=1;
+        const hi=rows.findIndex(r=>r.some(x=>/name/i.test(String(x)))&&r.some(x=>/score|mark/i.test(String(x))));
+        if(hi>=0){nc=rows[hi].findIndex(x=>/name/i.test(String(x)));sc=rows[hi].findIndex(x=>/score|mark/i.test(String(x)));}
+        const pairs=rows.slice(hi+1).filter(r=>String(r[nc]||'').trim()).map(r=>[String(r[nc]).trim(),String(r[sc]==null?'':r[sc])]);
+        if(!pairs.length)throw new Error('empty');
+        st.flash=extReport(extApply(c,ex,pairs));
+      }catch(e){st.err=e.message==='nolib'?'The spreadsheet reader did not load. Paste the scores instead.':'That file could not be read. It needs a Name column and a Score column.';}
+      render();
+    })();
+  }
+  const k=t.dataset.xk;
+  if(k==='max'){
+    const v=parseFloat(t.value);if(!(v>0)||v>1000){toast('Enter what the paper is out of, for example 20.');t.value=ex.max;return true;}
+    const over=Object.values(ex.scores||{}).filter(x=>x>v).length;
+    if(over){toast('Some scores are higher than '+v+'. Fix those first.');t.value=ex.max;return true;}
+    ex.max=Math.round(v*100)/100;saveW();reindex();render();return true;
+  }
+  if(t.dataset.xs!==undefined){
+    const v=extParse(t.value,ex.max);
+    if(v===undefined){toast('Marks must be between 0 and '+ex.max+', or A for absent.');const g=extGet(ex,t.dataset.xs);t.value=g?(g.a?'A':g.v):'';return true;}
+    extSet(ex,t.dataset.xs,v);saveW();reindex();
+    const el=document.getElementById('xc-'+ex.id);if(el)el.textContent=c.roster.filter(n=>extGet(ex,n)).length+'/'+c.roster.length+' entered';
+    return true;
+  }
+  return false;
+};
+extAct=async el=>{
+  const st=S.st,c=cls(st.cid);if(!c)return;
+  const act=el.dataset.act;
+  if(act==='ext-add'){
+    const g=id=>{const x=document.getElementById(id);return x?x.value:'';};
+    const subject=cleanName(g('xa-subject')),title=cleanName(g('xa-title'))||'Entered scores',max=parseFloat(g('xa-max')),term=g('xa-term');
+    if(!subject){st.err='Give the subject a name, for example Mathematics.';render();return;}
+    if(!(max>0)||max>1000){st.err='Enter what the scores are out of, for example 20.';render();return;}
+    c.exams.push({id:uid(),ext:true,title,subject,questions:[],secs:{},theoryMode:'online',duration:0,passMark:50,max:Math.round(max*100)/100,term:term==='mid'||term==='end'?term:'',scores:{},abs:{},shuffleQ:false,shuffleO:false,showResult:false,showReview:false,open:false});
+    st.err='';st.flash='Added. Type the scores in below, or paste a column.';saveW();reindex();render();return;
+  }
+  const ex=c.exams.find(e=>e.id===el.dataset.id&&e.ext);if(!ex)return;
+  if(act==='ext-paste'){
+    const ta=document.getElementById('xp-'+ex.id);const r=extPairs(ta?ta.value:'',c);
+    if(r.err){st.err=r.err;render();return;}
+    st.err='';st.flash=extReport(extApply(c,ex,r.pairs));render();return;
+  }
+  if(act==='ext-tpl'){
+    await saveSheets(ex.subject+' scores',[{name:'Scores',rows:[['Name','Score (out of '+fmtN(ex.max)+')']].concat(c.roster.map(n=>{const g=extGet(ex,n);return [n,g?(g.a?'A':g.v):''];})),widths:[34,18]}]);
+  }
+};
+extCard=(c,ex)=>{
+  const st=S.st,e=esc(ex.id),n=c.roster.filter(x=>extGet(ex,x)).length;
+  const rows=c.roster.map(nm=>{const g=extGet(ex,nm);return '<tr><td>'+esc(nm)+'</td><td class="num"><input type="text" inputmode="decimal" class="xs" style="width:84px;text-align:right" data-xe="'+e+'" data-xs="'+esc(nm)+'" value="'+(g?(g.a?'A':g.v):'')+'" aria-label="'+esc(nm)+' score"></td></tr>';}).join('');
+  return '<article class="card stack"><div class="row" style="justify-content:space-between;align-items:flex-start"><div><h3>'+esc(ex.subject)+'</h3><p class="muted sm">'+esc(ex.title)+'</p></div>'+
+    '<div class="row"><span class="badge">Entered by the teacher</span></div></div>'+
+    '<p class="mono sm">Out of '+fmtN(ex.max)+' · <span id="xc-'+e+'">'+n+'/'+c.roster.length+' entered</span></p>'+
+    (c.roster.length?'':'<div class="note">Add the class list first, then the scores line up against the names.</div>')+
+    '<details data-dx="xe-'+e+'"'+(n<c.roster.length&&c.roster.length?' open':'')+'><summary>Scores</summary>'+
+    '<div class="setgrid" style="margin-top:10px"><label class="f">Subject name<input type="text" data-ex="'+e+'" data-k="subject" value="'+esc(ex.subject)+'"></label>'+
+    '<label class="f">Title<input type="text" data-ex="'+e+'" data-k="title" value="'+esc(ex.title)+'"></label>'+
+    '<label class="f">Out of<input type="number" min="1" max="1000" step="any" data-xe="'+e+'" data-xk="max" value="'+ex.max+'"></label>'+
+    '<label class="f">Pass mark (%)<input type="number" min="0" max="100" data-ex="'+e+'" data-k="passMark" value="'+ex.passMark+'"></label></div>'+
+    '<label class="f" style="margin-top:12px">Counts on the report card as<select data-ex="'+e+'" data-k="term"><option value=""'+(!ex.term?' selected':'')+'>Not on the report card</option><option value="mid"'+(ex.term==='mid'?' selected':'')+'>Mid-term score</option><option value="end"'+(ex.term==='end'?' selected':'')+'>End-of-term exam</option></select></label>'+
+    '<p class="muted sm" style="margin:12px 0 6px">Type A for a child who was absent (counts as 0). A blank stays blank, and that child’s report card stays incomplete until a score is entered.</p>'+
+    '<div class="scroll"><table class="reg"><thead><tr><th>Name</th><th class="num">Score /'+fmtN(ex.max)+'</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+    '<div class="stack" style="gap:8px;margin-top:14px"><label class="f">Or paste a column<span class="hint">One child per line as “Name, score”, or just the scores in class-list order.</span><textarea id="xp-'+e+'" rows="4" placeholder="Ada Okafor, 17&#10;Tunde Bello, 12"></textarea></label>'+
+    '<div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn small" data-act="ext-paste" data-id="'+e+'">Apply pasted scores</button><button class="btn small" data-act="ext-tpl" data-id="'+e+'">Download a score sheet (.xlsx)</button>'+
+    '<label class="btn small" style="cursor:pointer">Upload a filled sheet<input id="f-extscores" data-xe="'+e+'" type="file" accept=".xlsx,.xls,.csv" hidden></label></div></div>'+
+    '<div class="row" style="margin-top:14px">'+(st.conf==='del:'+ex.id?'<button class="btn danger small" data-act="del-exam" data-id="'+e+'">Yes, delete this paper</button><button class="btn small" data-act="conf-no">Cancel</button>':'<button class="btn danger small" data-act="del-exam" data-id="'+e+'">Delete paper</button>')+'</div></details></article>';
+};
+extForm=c=>{
+  if(ME)return '';
+  return '<section class="card stack"><div><h2>Scores entered by the teacher</h2><p class="muted" style="margin-top:4px">For a test that was written on paper or somewhere else, such as a mid-term or an exam. Type the marks in and they count on the register and the report card like any other paper.</p></div>'+
+    '<div class="setgrid"><label class="f">Subject<input type="text" id="xa-subject" placeholder="Mathematics"></label><label class="f">Title<input type="text" id="xa-title" placeholder="Mid-Term Test"></label>'+
+    '<label class="f">Out of<input type="number" id="xa-max" min="1" max="1000" step="any" placeholder="20"></label>'+
+    '<label class="f">Counts on the report card as<select id="xa-term"><option value="mid">Mid-term score</option><option value="end">End-of-term exam</option><option value="">Not on the report card</option></select></label></div>'+
+    '<div><button class="btn primary" data-act="ext-add">Add this paper</button></div></section>';
+};
+/*@end*/
 /*@tier growth*/
 const tcSubjects=cid=>{const c=cls(cid),out=[];(c?c.exams:[]).forEach(e=>{if(!out.some(x=>nk(x)===nk(e.subject)))out.push(e.subject);});return out;};
 async function loadTeachers(){
@@ -2929,6 +3069,7 @@ async function act(a,el){
       if(st.conf==='del:'+id){c.exams=c.exams.filter(e=>e.id!==id);st.conf='';saveW();st.flash='Paper deleted.';}else st.conf='del:'+id;
       render();break;}
     case 'conf-no':st.conf='';render();break;
+    case 'ext-add':case 'ext-paste':case 'ext-tpl':{await extAct(el);break;}
     case 'read-text':{
       const r=parseText(st.paste);st.imp=r;st.err=r.exams.length?'':'No questions were found in that text.';render();break;}
     case 'add-imp':{
@@ -3158,6 +3299,7 @@ $app.addEventListener('change',async e=>{
     if(t.dataset.bk==='inc')it.include=t.checked;else it.cid=t.value;
     return;
   }
+  if(t.dataset.xe&&extChange(t))return;
   if(t.dataset.ex){
     const c=cls(st.cid),ex=c&&c.exams.find(x=>x.id===t.dataset.ex),k=t.dataset.k;if(!ex)return;
     if(k==='draw'){const nm=t.dataset.draw,us=secUnits(ex,nm).length,v=parseInt(t.value,10);ex.draw=ex.draw||{};if(!(v>=1)||v>=us)delete ex.draw[nm];else ex.draw[nm]=v;if(!Object.keys(ex.draw).length)delete ex.draw;applyDraw(ex);saveW();reindex();render();return;}
@@ -3206,6 +3348,7 @@ $app.addEventListener('change',async e=>{
   if(t.dataset.set==='school'){W.school=cleanName(t.value);saveW();return;}
   if(t.id==='f-docx'&&t.files[0]){await handleDocx(t.files[0]);return;}
   if(t.id==='f-roster'&&t.files[0]){await handleRoster(t.files[0]);return;}
+  if(t.id==='f-extscores'&&t.files[0]){await extChange(t,true);t.value='';return;}
   if(t.id==='f-bulk'&&t.files[0]){await handleBulk(t.files[0]);return;}
   if(t.id==='f-setup'&&t.files[0]){await handleSetupFile(t.files[0]);return;}
   if(t.id==='f-results'&&t.files[0]){await handleResultsFile(t.files[0]);return;}

@@ -221,6 +221,7 @@ export function makeHandler(store, opts = {}) {
         const x = oe.get(eid);
         if (!x) out.push(c.name + ': added paper ' + e.subject);
         else if (!!x.open !== !!e.open) out.push(c.name + ': ' + (e.open ? 'opened' : 'closed') + ' ' + e.subject);
+        else if (e.ext && JSON.stringify([x.scores, x.abs, x.max]) !== JSON.stringify([e.scores, e.abs, e.max])) out.push(c.name + ': entered scores for ' + e.subject);
       }
       for (const [eid, e] of oe) if (!ne.has(eid)) out.push(c.name + ': removed paper ' + e.subject);
       const d = (c.roster || []).length - (o.roster || []).length;

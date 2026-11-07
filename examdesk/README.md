@@ -152,5 +152,8 @@ Tick **Keep the answers off the children's devices** in a paper's settings. Chil
 ## Set-up code (vendor)
 In the vendor console, give a site a **Set-up code** (Make one). The school types it once when it first saves to the server.
 
+## Scores entered by the teacher (Growth and above)
+When a mid-term or exam was written on paper, go to **Papers → Scores entered by the teacher**, add the paper (subject, title, out of, counts as mid-term or end-of-term) and enter the marks by hand, by pasting a column, or by uploading a filled score sheet. The scores then count everywhere a CBT result does, so one report card can mix both. A blank score keeps that child's card incomplete (nothing is counted as zero automatically); type **A** for a child who was absent, which counts as 0. Only the administrator can enter scores, and candidates never see these papers.
+
 ## Campus plan
 Campus adds: white-label branding (logo, name, colour), random papers drawn from a question pool, annual report cards with year-end promotion, AI-drafted report card comments (preset chips plus the teacher's rough notes), an activity log with an exam officer role, an exam integrity log, and a School overview page with a downloadable broadsheet. AI comments need the AI key on the site, same as AI questions.
